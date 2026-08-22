@@ -1,7 +1,7 @@
 # Implementation Plan - Submodule 1: Core Database, Models & Guardrail Engine
 
 ## Overview
-This submodule forms the foundational data layer and safety engine for **Resolve.ai**. It establishes the database schema for invoices, transaction ledgers (with idempotent constraints), composite chat sessions, and merchant guardrails, alongside a deterministic Python rule-validation engine enforcing upper/lower boundary bounds and strict Finite State Machine (FSM) lifecycle rules.
+This submodule forms the foundational data layer and safety engine for **Resolve.ai**. It establishes the database schema for invoices, transaction ledgers (with idempotent constraints), composite chat sessions, and merchant guardrails, alongside a deterministic Python rule-validation engine enforcing upper/lower boundary bounds, Razorpay's platform 180-day hard limit, and strict Finite State Machine (FSM) lifecycle rules.
 
 ---
 
@@ -61,7 +61,7 @@ $$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIAL
 
 ---
 
-### 4. Deterministic Guardrail Engine & Upper/Lower Bound Checks (`backend/guardrails.py`)
+### 4. Deterministic Guardrail Engine & Razorpay 180-Day Hard Limit (`backend/guardrails.py`)
 - **`GuardrailEngine`**:
   - `validate_proposal(invoice_id, proposed_amount_inr, extension_days)`:
     - Converts `proposed_amount_inr` to `proposed_amount_paise = int(round(proposed_amount_inr * 100))`.
@@ -69,7 +69,11 @@ $$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIAL
     - **Enforces Ceiling & Floor Boundary**:
       $$\text{min\_required\_paise} \le \text{proposed\_amount\_paise} \le \text{remaining\_amount\_paise}$$
       Rejects any proposal where `proposed_amount_paise > remaining_amount_paise` (preventing over-billing or hallucinated inflated link amounts).
-    - Validates if `extension_days <= max_extension_days`.
+    - **Enforces Razorpay Platform 180-Day Limit**:
+      ```python
+      effective_max_extension = min(max_extension_days, 180)
+      ```
+      Rejects any extension request where `extension_days > effective_max_extension` to prevent Razorpay API `400 Bad Request` failures.
     - Returns `(is_valid: bool, reason: str, counter_offer_terms: dict)`.
 
 ---
@@ -80,6 +84,7 @@ $$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIAL
 - Run `python backend/test_submodule1.py`:
   1. Verify `inr_to_paise(20000.50)` equals `2000050` and DB stores integer `2000050`.
   2. Verify upper-bound check: Reject proposal of ₹60,000 on ₹50,000 remaining balance.
-  3. Verify composite session key `f"{phone}_{invoice_id}"` isolates multiple invoices for same phone.
-  4. Verify FSM rejects invalid backward state transition (`PAID -> UNPAID`).
-  5. Test `TransactionLedger` enforcing `UNIQUE(razorpay_payment_id)` constraint on duplicate inserts.
+  3. Verify Razorpay 180-day cap: Merchant setting `max_extension_days: 200` is capped at 180 days.
+  4. Verify composite session key `f"{phone}_{invoice_id}"` isolates multiple invoices for same phone.
+  5. Verify FSM rejects invalid backward state transition (`PAID -> UNPAID`).
+  6. Test `TransactionLedger` enforcing `UNIQUE(razorpay_payment_id)` constraint on duplicate inserts.
