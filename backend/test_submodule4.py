@@ -111,5 +111,20 @@ class TestSubmodule4(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.text, "test_challenge_123")
 
+    def test_7_create_invoice_endpoint(self):
+        """Test POST /api/invoices creates a new master invoice."""
+        payload = {
+            "customer_name": "Rajesh Enterprises",
+            "customer_phone": "+919812345678",
+            "original_amount_inr": 75000.0,
+            "due_date": "2026-08-30"
+        }
+        res = self.client.post("/api/invoices", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["customer_name"], "Rajesh Enterprises")
+        self.assertEqual(data["original_amount_inr"], 75000.0)
+        self.assertEqual(data["status"], "UNPAID")
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,10 +16,11 @@ from backend.database import (
     get_guardrails,
     update_guardrails,
     get_invoice,
+    upsert_invoice,
     get_connection
 )
 from backend.seed_data import seed_database
-from backend.guardrails import GuardrailEngine, paise_to_inr
+from backend.guardrails import GuardrailEngine, paise_to_inr, inr_to_paise
 from backend.razorpay_client import razorpay_client
 from backend.webhooks import verify_meta_webhook, process_whatsapp_webhook, reconcile_payment_event
 from backend.agent import agentic_negotiator
@@ -77,6 +78,12 @@ class ChatMessageRequest(BaseModel):
     invoice_id: str
     customer_phone: str
     message: str
+
+class CreateInvoiceRequest(BaseModel):
+    customer_name: str
+    customer_phone: str
+    original_amount_inr: float
+    due_date: str
 
 class ChatResetRequest(BaseModel):
     session_id: str
@@ -158,6 +165,45 @@ async def get_invoice_detail(invoice_id: str):
         "due_date": inv.due_date,
         "status": inv.status.value
     }
+
+@app.post("/api/invoices")
+async def create_invoice(req: CreateInvoiceRequest):
+    """Creates a new master invoice with integer paise currency conversion."""
+    conn = get_connection(settings.DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM master_invoices;")
+    count = cursor.fetchone()[0]
+    conn.close()
+
+    invoice_id = f"inv_SME_{count + 1:03d}"
+    paise_amount = inr_to_paise(req.original_amount_inr)
+
+    inv = MasterInvoice(
+        invoice_id=invoice_id,
+        customer_name=req.customer_name,
+        customer_phone=req.customer_phone,
+        original_amount_paise=paise_amount,
+        paid_amount_paise=0,
+        remaining_amount_paise=paise_amount,
+        due_date=req.due_date,
+        status=InvoiceStatus.UNPAID
+    )
+
+    upsert_invoice(inv, settings.DATABASE_PATH)
+
+    res = {
+        "invoice_id": inv.invoice_id,
+        "customer_name": inv.customer_name,
+        "customer_phone": inv.customer_phone,
+        "original_amount_inr": inv.original_amount_inr,
+        "paid_amount_inr": 0.0,
+        "remaining_amount_inr": inv.original_amount_inr,
+        "due_date": inv.due_date,
+        "status": inv.status.value
+    }
+
+    await broadcast_sse_event("invoice_created", res)
+    return res
 
 # --- 3. Merchant Guardrail Control Endpoints ---
 @app.get("/api/guardrails")
