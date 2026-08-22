@@ -41,7 +41,7 @@ app.add_middleware(
 - `POST /api/chat/message`: Process simulator chat messages.
 - `POST /api/chat/reset`: Reset session history.
 - `POST /api/webhooks/razorpay`: Raw-byte HMAC verified asynchronous Razorpay payment webhook.
-- `GET /api/webhooks/whatsapp` & `POST /api/webhooks/whatsapp`: Meta Cloud API verification & message receiver with multi-invoice routing.
+- `GET /api/webhooks/whatsapp` & `POST /api/webhooks/whatsapp`: Meta Cloud API verification & message receiver with text/interactive button payload parsing.
 - `GET /api/events`: Real-time SSE event stream.
 - `GET /api/analytics`: Overview metrics.
 

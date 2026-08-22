@@ -4,7 +4,7 @@
 
 ---
 
-## 21 Production-Grade Fintech Safeguards Integrated
+## 25 Production-Grade Fintech Safeguards Integrated
 
 ### Submodule 1: Core Database, Models & Guardrail Engine
 1. **Integer Paise Storage in DB**: Storing all monetary balances as integer paise (`amount_paise: int`) in SQLite/PostgreSQL to prevent binary floating-point drift.
@@ -16,26 +16,27 @@
 
 ### Submodule 2: Razorpay API Client & Webhook Engines
 7. **Raw Byte Webhook HMAC Verification**: Verifying Razorpay HMAC-SHA256 signatures against `await request.body()` (raw bytes) before JSON parsing to preserve exact payload formatting.
-8. **Payment Link Lifecycle & Link Deactivation**: Storing `razorpay_payment_link_id` in `PaymentLinkRecord`, listening for `payment_link.paid`, and explicitly cancelling superseded links via `POST /v1/payment_links/{id}/cancel`.
-9. **Asynchronous Non-Blocking Webhook Processing**: Validating HMAC immediately, dispatching ledger processing to FastAPI `BackgroundTasks`, and instantly returning `200 OK` (<100ms) to eliminate Razorpay retry storms.
-10. **Background Task Invoice Row Locking**: Locking the target `MasterInvoice` row (`invoice_locks[invoice_id]`) inside `reconcile_payment_event` to prevent concurrent webhook race conditions.
-11. **Meta WhatsApp Cloud API Webhook & Multi-Invoice Routing**: `GET` verification handshake (`hub.challenge`) & `POST` message receiver with phone-to-invoice routing (single invoice -> auto composite key, multi-invoice -> Meta Interactive Button selector).
+8. **Razorpay `X-Idempotency-Key` Headers**: Passing deterministic idempotency keys (`link_{session_id}_t{turn}_{amount}`) on `POST /v1/payment_links` requests to prevent duplicate link generation during LLM or network retries.
+9. **Payment Link Lifecycle & Link Deactivation**: Storing `razorpay_payment_link_id` in `PaymentLinkRecord`, listening for `payment_link.paid`, and explicitly cancelling superseded links via `POST /v1/payment_links/{id}/cancel`.
+10. **Asynchronous Non-Blocking Webhook Processing**: Validating HMAC immediately, dispatching ledger processing to FastAPI `BackgroundTasks`, and instantly returning `200 OK` (<100ms) to eliminate Razorpay retry storms.
+11. **Strict Balance Math Execution Inside Row Lock**: Executing `MasterInvoice` balance deductions, FSM state determination, and DB commits strictly inside an acquired row lock (`invoice_locks[invoice_id]`).
+12. **Meta WhatsApp Cloud API & Interactive Payload Receiver**: `GET` verification handshake (`hub.challenge`) & `POST` message receiver with text/interactive button payload parsing (`button_reply.id` / `list_reply.id`) for phone-to-invoice routing.
 
 ### Submodule 3: LLM Negotiation Agent & Session Manager
-12. **Session Mutex Locking**: Per-session concurrency locks (`session_locks[session_id]`) to prevent double-texting race conditions from executing parallel LLM tool calls.
-13. **Deterministic Safety Gateway (Untrusted LLM)**: Treating LLM outputs as strictly untrusted. `GuardrailEngine` acts as a hard gateway; if validation fails, API execution is blocked.
-14. **Anti-Hallucination Fund Receipt Directives**: System prompt forbids acknowledging settled funds based on user text claims alone; receipt confirmation requires `PARTIALLY_PAID` or `PAID` invoice status in injected system context.
-15. **Unix Timestamp Expiration Calculation**: Explicit UTC epoch timestamp calculation (`int((datetime.now() + timedelta(days)).timestamp())`) for payment links, capped at 180 days.
-16. **Graceful Tool Exception Recovery**: Wrapping Razorpay API tool calls in try/except blocks, passing error diagnostics back to the LLM context for user-friendly retry messaging.
+13. **Session Mutex Locking**: Per-session concurrency locks (`session_locks[session_id]`) to prevent double-texting race conditions from executing parallel LLM tool calls.
+14. **Deterministic Safety Gateway (Untrusted LLM)**: Treating LLM outputs as strictly untrusted. `GuardrailEngine` acts as a hard gateway; if validation fails, API execution is blocked.
+15. **Anti-Hallucination Fund Receipt Directives**: System prompt forbids acknowledging settled funds based on user text claims alone; receipt confirmation requires `PARTIALLY_PAID` or `PAID` invoice status in injected system context.
+16. **Unix Timestamp Expiration Calculation**: Explicit UTC epoch timestamp calculation (`int((datetime.now() + timedelta(days)).timestamp())`) for payment links, capped at 180 days.
+17. **Graceful Tool Exception Recovery**: Wrapping Razorpay API tool calls in try/except blocks, passing error diagnostics back to the LLM context for user-friendly retry messaging.
 
 ### Submodule 4: FastAPI Server Core & REST Endpoints
-17. **Strict Explicit CORS Security**: Restricting origins explicitly to frontend dev servers (`http://localhost:5173`, `http://127.0.0.1:5173`) with `allow_credentials=True` and clean syntax.
-18. **Non-Blocking Asynchronous I/O**: Using `httpx.AsyncClient` and async database drivers to prevent blocking the asyncio event loop.
+18. **Strict Explicit CORS Security**: Restricting origins explicitly to frontend dev servers (`http://localhost:5173`, `http://127.0.0.1:5173`) with `allow_credentials=True` and clean syntax.
+19. **Non-Blocking Asynchronous I/O**: Using `httpx.AsyncClient` and async database drivers to prevent blocking the asyncio event loop.
 
 ### Submodule 5: Frontend Dashboard & WhatsApp Simulator UI
-19. **Real-time Server-Sent Events (SSE)**: `GET /api/events` broadcasting instantaneous webhook reconciliation updates directly to the React dashboard without requiring manual page refreshes.
-20. **WhatsApp Simulator Typing Polish**: Animated three-dot *"Resolve.ai is typing..."* bubble rendered during backend processing.
-21. **Agent Trace & Authentic Razorpay Modal**: Real-time AI thought inspection drawer & clickable Razorpay Checkout Modal triggering live webhooks.
+20. **Real-time Server-Sent Events (SSE)**: `GET /api/events` broadcasting instantaneous webhook reconciliation updates directly to the React dashboard without requiring manual page refreshes.
+21. **WhatsApp Simulator Typing Polish**: Animated three-dot *"Resolve.ai is typing..."* bubble rendered during backend processing.
+22. **Agent Trace & Authentic Razorpay Modal**: Real-time AI thought inspection drawer & clickable Razorpay Checkout Modal triggering live webhooks.
 
 ---
 

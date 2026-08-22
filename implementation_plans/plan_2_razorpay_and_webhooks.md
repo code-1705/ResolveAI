@@ -2,52 +2,57 @@
 
 ## Overview
 Submodule 2 manages direct integration with financial and messaging API infrastructures:
-1. **Razorpay Payments**: Payment link generation (with explicit Unix timestamp expiry calculation), raw byte HMAC signature validation, idempotency enforcement via `TransactionLedger`, superseded link cancellation, and invoice balance auto-reconciliation with row locking.
+1. **Razorpay Payments**: Payment link generation with `X-Idempotency-Key` headers (preventing duplicate link creation on network retries), raw byte HMAC signature validation, idempotency enforcement via `TransactionLedger`, superseded link cancellation, and row-locked transaction reconciliation math.
 2. **Asynchronous Non-Blocking Processing**: Returns HTTP 200 OK under 100ms to eliminate Razorpay retry storms.
-3. **Meta WhatsApp Cloud API**: Real production-grade Webhook receiver (`GET` verification handshake & `POST` message ingestion with composite invoice routing) and outbound Meta Graph API client.
+3. **Meta WhatsApp Cloud API**: Real production-grade Webhook receiver (`GET` verification handshake & `POST` message ingestion with text & interactive button/list payload extraction) and outbound Meta Graph API client.
 
 ---
 
 ## Technical Specifications & Architecture
 
-### 1. Razorpay API Client (`backend/razorpay_client.py`)
+### 1. Razorpay API Client & Idempotency Header (`backend/razorpay_client.py`)
 - **`RazorpayClient`**:
-  - `create_payment_link(amount_in_paise: int, description: str, customer_info: dict, expiry_timestamp: int) -> dict`:
-    - Sends POST to `/v1/payment_links` formatted in exact integer paise and valid Unix timestamp `expiry_timestamp` (capped at 180 days).
+  - `create_payment_link(amount_in_paise: int, description: str, customer_info: dict, expiry_timestamp: int, idempotency_key: str = None) -> dict`:
+    - Sends POST to `/v1/payment_links` formatted in exact integer paise and valid Unix timestamp `expiry_timestamp`.
+    - **Header Safeguard**: Includes `X-Idempotency-Key: idempotency_key` (derived from `f"link_{session_id}_{turn_count}_{amount_paise}"`). If a network timeout causes an LLM or client retry, Razorpay returns the existing payment link instead of creating a duplicate orphaned link.
   - `cancel_payment_link(payment_link_id: str)`:
     - Sends POST to `/v1/payment_links/{payment_link_id}/cancel` to deactivate superseded payment links when a new agreement is reached.
   - `verify_webhook_signature(raw_body_bytes: bytes, signature: str, secret: str) -> bool`:
-    - Computes HMAC-SHA256 digest directly over **raw bytes** (`bytes`) before JSON parsing to preserve exact formatting/key order.
+    - Computes HMAC-SHA256 digest directly over **raw bytes** (`bytes`) before JSON parsing.
 
 ---
 
-### 2. Asynchronous Idempotent Webhook Handler & Invoice Row Locking (`backend/webhooks.py`)
+### 2. Transaction Reconciler with Row Lock & Balance Math (`backend/webhooks.py`)
 - **Endpoint Workflow**:
   1. `raw_body = await request.body()`
   2. `RazorpayClient.verify_webhook_signature(raw_body, signature, secret)`: Returns 400 Bad Request if invalid.
   3. Spawns `background_tasks.add_task(reconcile_payment_event, raw_body_json)`.
   4. Returns `{"status": "ok"}` **immediately (HTTP 200 OK < 100ms)**.
 
-- **Background Reconciler with Invoice Row Locking (`reconcile_payment_event`)**:
-  - Checks event type: `payment_link.paid`, `payment_link.partially_paid`, or `payment.captured`.
-  - Extracts `payment_id`, `payment_link_id`, and `invoice_id`.
-  - **Invoice Mutex Lock (`async with invoice_locks[invoice_id]:` / `SELECT ... FOR UPDATE`)**:
-    - Prevents race conditions where two simultaneous webhooks (`payment.captured` and `payment_link.paid`) attempt to update the same invoice status concurrently.
-  - Checks `TransactionLedger` for duplicate `payment_id` (Idempotency check).
-  - Updates `MasterInvoice` balance, applies FSM state transition, and cancels any other `ACTIVE` payment links associated with this invoice.
+- **Strict Reconciler Execution Steps inside Row Lock (`reconcile_payment_event`)**:
+  1. Extract `payment_id`, `payment_link_id`, `invoice_id`, and `amount_paise` from webhook JSON.
+  2. **Acquire Invoice Mutex Lock (`async with invoice_locks[invoice_id]:`)**:
+  3. **Re-Read Latest State**: Query DB for current `MasterInvoice` (`paid_amount_paise`, `remaining_amount_paise`, `status`).
+  4. **Idempotency Check**: Query `TransactionLedger` for existing `razorpay_payment_id`. If exists, release lock & return.
+  5. **Execute Balance Math Strictly Inside Lock**:
+     - `new_paid_paise = current_paid_paise + amount_paise`
+     - `new_remaining_paise = max(0, original_amount_paise - new_paid_paise)`
+     - Determine FSM status: `PAID` if `new_remaining_paise == 0` else `PARTIALLY_PAID`.
+  6. **Persist Transaction & Update Invoice**: Record into `TransactionLedger`, update `MasterInvoice`, cancel older active payment links, commit DB transaction, and release row lock.
 
 ---
 
-### 3. Meta WhatsApp Cloud API Receiver & Multi-Invoice Router (`backend/webhooks.py`)
+### 3. Meta WhatsApp Cloud API Receiver & Interactive Payload Parser (`backend/webhooks.py`)
 - `GET /api/webhooks/whatsapp`: Validates `hub.verify_token` and returns `hub.challenge`.
 - `POST /api/webhooks/whatsapp`:
-  1. Parses Meta Cloud API `messages` payload, extracting `customer_phone` and `text.body`.
-  2. **Multi-Invoice Routing Resolution**:
-     - Queries `MasterInvoice` for active invoices (`UNPAID`, `NEGOTIATING`, `PARTIALLY_PAID`) matching `customer_phone`.
-     - **If count == 1**: Auto-generates composite session key `session_id = f"{customer_phone}_{invoice_id}"` and forwards message to `AgenticNegotiator`.
-     - **If count > 1**: Pauses LLM execution and sends a Meta Interactive Message (List/Buttons) to WhatsApp asking:
-       *"Hi! You have 2 active invoices (Inv-001 for ₹50,000 and Inv-002 for ₹1,20,000). Which invoice would you like to discuss?"*
-     - **If count == 0**: Sends friendly message: *"No active overdue invoices found for this number."*
+  1. Parses Meta Cloud API payload `entry[0].changes[0].value.messages[0]`.
+  2. **Extract Message Payload Type**:
+     - **Text Message (`type == "text"`)**: Extracts `text.body`.
+     - **Interactive Button / List Selection (`type == "interactive"`)**: Extracts `button_reply.id` or `list_reply.id` (e.g. `id = "select_invoice_inv_SME_002"`).
+  3. **Routing & Session Key Binding**:
+     - If interactive payload received: Binds selected `invoice_id`, initializes composite session key `session_id = f"{customer_phone}_{selected_invoice_id}"`, and acknowledges selection.
+     - If text message received and count == 1: Auto-routes to `f"{customer_phone}_{invoice_id}"`.
+     - If text message received and count > 1: Sends Meta Interactive Buttons asking user to select active invoice.
 
 ---
 
@@ -55,7 +60,7 @@ Submodule 2 manages direct integration with financial and messaging API infrastr
 
 ### Automated Verification
 - Run `python backend/test_submodule2.py`:
-  1. Test HMAC-SHA256 signature verification over raw bytes.
-  2. Test background task invoice row lock: Simulate simultaneous webhooks for same `invoice_id` and verify sequential processing.
-  3. Test WhatsApp Routing: Phone with 1 active invoice routes to LLM; phone with 2 active invoices returns Meta Interactive Button response.
-  4. Test duplicate webhook payload delivery: Assert background task executes idempotently and returns HTTP 200 OK.
+  1. Test Razorpay `X-Idempotency-Key` header prevents duplicate link creation on simulated API retry.
+  2. Test background task balance math inside row lock: Verify accurate `remaining_amount_paise` deduction.
+  3. Test Meta WhatsApp Interactive payload parser: Parse `type == "interactive"` button reply and confirm extraction of `invoice_id`.
+  4. Test HMAC-SHA256 signature verification over raw bytes.
