@@ -4,7 +4,7 @@
 
 ---
 
-## Completed Implementation Submodules
+## 🏆 Completed 5-Submodule End-to-End Implementation
 
 ### Submodule 1: Core Database, Models & Guardrail Engine (`backend/`)
 1. **Configuration & Secrets (`backend/config.py`)**: Centralized Pydantic settings loading environment variables, merchant defaults, and DB paths.
@@ -19,7 +19,7 @@
 
 ### Submodule 2: Razorpay API Client & Meta Webhook Engines (`backend/`)
 1. **Razorpay Client & Payload Idempotency (`backend/razorpay_client.py`)**:
-   - `create_payment_link()` with `"reference_id": f"ref_{session_id[:20]}_t{turn}"` (max 40 chars) payload idempotency.
+   - `create_payment_link()` with `"reference_id": f"ref_{session_id[:20]}_t{turn}"` (max 40 chars) payload idempotency & `"notes": {"invoice_id": invoice_id}`.
    - `cancel_payment_link()` deactivating superseded active links.
    - `verify_webhook_signature()` validating HMAC-SHA256 directly over raw request bytes.
 2. **Meta WhatsApp Cloud API Client (`backend/whatsapp_client.py`)**:
@@ -43,35 +43,76 @@
    - Seeds realistic Indian SME overdue invoices: Apex Logistics (₹50,000), Vanguard Web Studios (₹1,20,000), GreenLeaf Organics (₹35,000).
 2. **FastAPI Application Server (`backend/main.py`)**:
    - **Explicit CORS Security**: `allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"]`.
-   - **Real-Time Server-Sent Events (SSE)** (`GET /api/events`): Broadcasts live updates (`payment_reconciled`, `guardrails_updated`, `chat_message_processed`) to UI clients.
-   - **REST Endpoints**:
+   - **Real-Time Server-Sent Events (SSE)** (`GET /api/events`): Broadcasts live updates (`payment_reconciled`, `guardrails_updated`, `chat_message_processed`) with non-blocking timeout polling.
+   - **REST & Webhook Endpoints**:
      - `GET /api/invoices`, `GET /api/invoices/{id}`
      - `GET /api/guardrails`, `POST /api/guardrails`
      - `POST /api/chat/message`, `POST /api/chat/reset`
-     - `POST /api/webhooks/razorpay` (raw byte HMAC verified, async background task)
-     - `GET /api/webhooks/whatsapp`, `POST /api/webhooks/whatsapp`
+     - `POST /api/webhooks/razorpay` (HMAC verified, enqueued as `BackgroundTasks`)
+     - `GET /api/webhooks/whatsapp`, `POST /api/webhooks/whatsapp` (enqueued as `BackgroundTasks`)
      - `GET /api/analytics` (Total Overdue TPV, Recovered TPV, Recovery Rate %)
+
+### Submodule 5: Frontend Dashboard & WhatsApp Simulator (`frontend/`)
+1. **Glassmorphism Dark-Mode Web Application (`frontend/src/`)**:
+   - **Real-Time SSE Syncing (`EventSource`)**: Live updates without page refreshes.
+   - **📊 Invoices & Analytics Dashboard**: TPV metric cards, recovery progress bar, master invoice table with status badges (`UNPAID`, `NEGOTIATING`, `PARTIALLY_PAID`, `PAID`).
+   - **🛡️ Merchant Guardrails Control**: Interactive policy sliders for minimum partial payment % (10-100%), maximum extension days (1-180), and negotiation persona/tone.
+   - **💬 WhatsApp Customer Simulator**: Dual-pane layout featuring WhatsApp chat bubbles with proposal presets (*Propose 40% Today*, *14-Day Extension*, *Lowball 10%*, *Claim Paid via UPI*).
+   - **🔍 Inspectable Real-Time Agent Trace Panel**: Step-by-step audit visualization showing strategy reasoning, guardrail pass/reject status, zero-float-drift integer paise conversion, payload idempotency keys, and generated Razorpay payment link URLs.
 
 ---
 
-## Verification Results
+## 🧪 Verification Results
 
-### Complete Backend Test Suite (`backend/test_submodule*.py`)
+### 1. Complete Backend Unit Test Suite (`backend/test_submodule*.py`)
 ```bash
 python -m unittest backend/test_submodule1.py backend/test_submodule2.py backend/test_submodule3.py backend/test_submodule4.py
 ```
-
+Output:
 ```text
 ...................
 ----------------------------------------------------------------------
-Ran 19 tests in 1.521s
+Ran 19 tests in 2.050s
 
 OK
 ```
 
+### 2. Frontend Production Bundle Build (`frontend/`)
+```bash
+cd frontend
+npm run build
+```
+Output:
+```text
+vite v8.2.2 building client environment for production...
+✓ 16 modules transformed.
+dist/index.html                   0.45 kB │ gzip:  0.29 kB
+dist/assets/index-4Ppi2ilN.css    1.67 kB │ gzip:  0.84 kB
+dist/assets/index-DpfKmeO8.js   213.65 kB │ gzip: 65.43 kB
+
+✓ built in 2.80s
+```
+
 ---
 
-## Project Structure
+## 🚀 Running the Project Locally
+
+### 1. Start the FastAPI Backend Server
+```bash
+python -m uvicorn backend.main:app --reload --port 8000
+```
+
+### 2. Start the React Frontend UI
+```bash
+cd frontend
+npm run dev
+```
+
+Open `http://localhost:5173` in your browser to interact with the Resolve.ai Merchant Dashboard and WhatsApp Simulator!
+
+---
+
+## 📁 Complete Project Architecture
 
 ```
 c:\Users\Vansh\Desktop\TrustBridge\
@@ -91,11 +132,13 @@ c:\Users\Vansh\Desktop\TrustBridge\
 │   ├── test_submodule2.py  # Submodule 2 unit test suite
 │   ├── test_submodule3.py  # Submodule 3 unit test suite
 │   └── test_submodule4.py  # Submodule 4 unit test suite
-├── implementation_plans/   # Detailed implementation plans
-└── README.md
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx         # Dashboard, Guardrails & WhatsApp Simulator UI
+│   │   ├── index.css       # Glassmorphism dark-mode styling
+│   │   └── main.jsx        # React entrypoint
+│   ├── package.json        # Frontend dependencies
+│   └── vite.config.js      # Vite build configuration
+├── implementation_plans/   # Master roadmap & 5 submodule plans
+└── README.md               # End-to-end documentation & verification results
 ```
-
----
-
-## Next Steps
-- **Submodule 5**: Implement Merchant Dashboard & WhatsApp Simulator UI (`frontend/`).
