@@ -29,32 +29,28 @@
    - `process_whatsapp_webhook()` parsing both `type == "text"` and `type == "interactive"` button replies for composite session key binding (`f"{customer_phone}_{invoice_id}"`).
    - `reconcile_payment_event()` async reconciler executing integer paise math, FSM updates, and link deactivation strictly inside invoice row locks (`async with invoice_locks[invoice_id]:`).
 
+### Submodule 3: LLM Negotiation Agent & Session Manager (`backend/`)
+1. **Session Context Manager (`backend/session_manager.py`)**:
+   - `SessionManager`: Manages multi-turn conversation state mapped to composite session keys `f"{customer_phone}_{invoice_id}"`.
+   - `get_session_lock()`: Multi-loop thread-safe per-session async locks preventing double-texting race conditions.
+2. **Agentic Negotiation Engine (`backend/agent.py`)**:
+   - **Anti-Hallucination Directives**: Forbids confirming receipt of funds based on customer text claims alone without verified DB status (`PARTIALLY_PAID` or `PAID`).
+   - **Untrusted LLM Safety Gateway**: Filters tool proposals through `GuardrailEngine`. If `PASS`, converts INR to integer paise, calculates 180-day capped UTC expiry timestamp, generates `reference_id`, and executes Razorpay API call. If `REJECT`, hard blocks API call and issues polite counter-offer.
+   - **Inspectable Agent Trace**: Constructs visual audit payload (`thought`, `guardrail_check`, `currency_conversion`, `tool_executed`, `payment_link_url`).
+
 ---
 
 ## Verification Results
 
-### Submodule 1 Unit Tests (`backend/test_submodule1.py`)
+### Full Test Suite Execution (`backend/test_submodule*.py`)
 ```bash
-python -m unittest backend/test_submodule1.py
+python -m unittest backend/test_submodule1.py backend/test_submodule2.py backend/test_submodule3.py
 ```
-- `test_1_currency_math`: PASSED
-- `test_2_fsm_lifecycle_transitions`: PASSED
-- `test_3_database_operations`: PASSED
-- `test_4_unique_payment_id_idempotency`: PASSED
-- `test_5_guardrail_engine_validation`: PASSED
-
-### Submodule 2 Unit Tests (`backend/test_submodule2.py`)
-```bash
-python -m unittest backend/test_submodule2.py
-```
-- `test_1_razorpay_payment_link_reference_id_idempotency`: PASSED
-- `test_2_raw_byte_hmac_signature_verification`: PASSED
-- `test_3_meta_whatsapp_webhook_handshake_and_routing`: PASSED
-- `test_4_asynchronous_row_locked_webhook_reconciliation`: PASSED
 
 ```text
+.............
 ----------------------------------------------------------------------
-Ran 4 tests in 0.277s
+Ran 13 tests in 0.921s
 
 OK
 ```
@@ -73,8 +69,11 @@ c:\Users\Vansh\Desktop\TrustBridge\
 │   ├── razorpay_client.py  # Razorpay SDK client & reference_id idempotency
 │   ├── whatsapp_client.py  # Meta Graph API WhatsApp client
 │   ├── webhooks.py         # Meta & Razorpay webhook engine + row locking
+│   ├── session_manager.py  # Composite session manager & per-session locks
+│   ├── agent.py            # Agentic negotiator, Guardrail gateway & trace log
 │   ├── test_submodule1.py  # Submodule 1 unit test suite
-│   └── test_submodule2.py  # Submodule 2 unit test suite
+│   ├── test_submodule2.py  # Submodule 2 unit test suite
+│   └── test_submodule3.py  # Submodule 3 unit test suite
 ├── implementation_plans/   # Detailed implementation plans
 └── README.md
 ```
@@ -82,4 +81,4 @@ c:\Users\Vansh\Desktop\TrustBridge\
 ---
 
 ## Next Steps
-- **Submodule 3**: Implement Agentic LLM Negotiation Engine & Session Manager (`session_manager.py`, `agent.py`).
+- **Submodule 4**: Implement FastAPI Server Core & REST Endpoints (`seed_data.py`, `main.py`).
