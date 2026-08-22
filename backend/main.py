@@ -38,12 +38,41 @@ async def broadcast_sse_event(event_type: str, data: Dict[str, Any]):
         except Exception:
             pass
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# --- Active Reconciliation Cron ---
+scheduler = AsyncIOScheduler()
+
+@scheduler.scheduled_job('interval', minutes=30)
+async def active_reconciliation_job():
+    """Polls Razorpay for missed webhooks every 30 minutes."""
+    try:
+        print("[Cron] Running Active Reconciliation...")
+        payments = razorpay_client.get_recent_payments()
+        for p in payments:
+            if p.get("status") == "captured":
+                # Synthesize a webhook payload and reconcile it
+                mock_webhook = {
+                    "event": "payment.captured",
+                    "payload": {
+                        "payment": {
+                            "entity": p
+                        }
+                    }
+                }
+                await reconcile_payment_event(mock_webhook, settings.DATABASE_PATH)
+        print("[Cron] Active Reconciliation Complete.")
+    except Exception as e:
+        print(f"[Cron] Active Reconciliation Failed: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Seed database and initialize tables
     seed_database(settings.DATABASE_PATH)
+    scheduler.start()
     yield
     # Shutdown
+    scheduler.shutdown()
     EVENT_QUEUES.clear()
 
 app = FastAPI(

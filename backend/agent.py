@@ -98,8 +98,28 @@ class AgenticNegotiator:
                     }
                 }
 
-            # 3. Parse Proposal Parameters (Amount & Extension Days)
-            proposed_amount_inr, extension_days = self._parse_proposal_intent(customer_message, invoice, guardrails)
+            # 3. Parse Proposal Parameters (Amount, Extension Days & Intent)
+            proposed_amount_inr, extension_days, intent = self._parse_proposal_intent(customer_message, invoice, guardrails)
+
+            if intent == "escalate":
+                # Handle Human Handoff Escapement
+                invoice.requires_human_attention = True
+                from backend.database import upsert_invoice
+                upsert_invoice(invoice, self.db_path)
+                
+                resp_text = (
+                    "I understand your frustration. I have escalated your case to a human agent "
+                    "who will review this and get back to you shortly. Please wait for our team to contact you."
+                )
+                self.session_manager.add_message(session_id, "agent", resp_text)
+                return {
+                    "response_text": resp_text,
+                    "trace": {
+                        "thought": "Customer expressed extreme dissatisfaction. Triggered human handoff.",
+                        "guardrail_check": {"status": "ESCALATED", "rule": "human_handoff"},
+                        "verified_invoice_status": invoice.status.value
+                    }
+                }
 
             # 4. Evaluate Proposal against GuardrailEngine Safety Gateway
             guardrail_passed, reason, guardrail_meta = self.guardrail_engine.validate_proposal(
@@ -133,6 +153,26 @@ class AgenticNegotiator:
                 reference_id = f"ref_{invoice_id[:15]}_t{turn_count}_{ts_suffix}"[:40]
 
                 try:
+                    # De-duplicate: Cancel existing active payment links
+                    conn = get_connection(self.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT razorpay_payment_link_id FROM payment_links WHERE invoice_id = ? AND status = 'ACTIVE';", (invoice_id,))
+                    active_links = cursor.fetchall()
+                    conn.close()
+
+                    for link in active_links:
+                        old_link_id = link["razorpay_payment_link_id"]
+                        try:
+                            razorpay_client.cancel_payment_link(old_link_id)
+                            # Update DB status to CANCELLED
+                            conn = get_connection(self.db_path)
+                            c = conn.cursor()
+                            c.execute("UPDATE payment_links SET status = 'CANCELLED' WHERE razorpay_payment_link_id = ?;", (old_link_id,))
+                            conn.commit()
+                            conn.close()
+                        except Exception as e:
+                            print(f"Warning: Failed to cancel old payment link {old_link_id}: {e}")
+
                     # Call Razorpay Payment Links API
                     link_res = razorpay_client.create_payment_link(
                         amount_in_paise=approved_amount_paise,
@@ -214,7 +254,7 @@ class AgenticNegotiator:
         message: str,
         invoice: MasterInvoice,
         guardrails: Any
-    ) -> Optional[Tuple[float, int]]:
+    ) -> Optional[Tuple[float, int, str]]:
         """
         Calls Google Gemini REST API to dynamically understand natural language proposals and extract structured parameters.
         """
@@ -229,12 +269,13 @@ class AgenticNegotiator:
 
         Analyze the customer message and return a valid raw JSON object:
         {{
-          "user_intent": "proposal" | "inability_to_pay" | "text_payment_claim" | "general_query",
+          "user_intent": "proposal" | "inability_to_pay" | "text_payment_claim" | "general_query" | "escalate",
           "proposed_amount_inr": number or 0,
           "requested_extension_days": number or {guardrails.max_extension_days},
           "reasoning": "brief explanation"
         }}
         Return ONLY raw valid JSON. No markdown backticks.
+        NOTE: Use "escalate" if the customer is extremely angry, mentions legal action, fraud, or disputes the service entirely.
         """
 
         try:
@@ -249,11 +290,11 @@ class AgenticNegotiator:
             if resp.status_code == 200:
                 res_json = resp.json()
                 text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = json.loads(text_resp)
+                parsed = json.loads(text_resp.replace('```json', '').replace('```', '').strip())
 
                 amt = parsed.get("proposed_amount_inr")
                 days = parsed.get("requested_extension_days")
-                intent = parsed.get("user_intent")
+                intent = parsed.get("user_intent", "general_query")
 
                 if intent == "inability_to_pay":
                     proposed_amount = 0.0
@@ -263,7 +304,7 @@ class AgenticNegotiator:
                     proposed_amount = round(invoice.remaining_amount_inr * 0.40, 2)
 
                 ext_days = int(days) if days is not None else guardrails.max_extension_days
-                return (proposed_amount, ext_days)
+                return (proposed_amount, ext_days, intent)
         except Exception:
             pass
 
@@ -274,7 +315,7 @@ class AgenticNegotiator:
         message: str,
         invoice: MasterInvoice,
         guardrails: Any
-    ) -> Tuple[float, int]:
+    ) -> Tuple[float, int, str]:
         """
         Parses payment proposals using Google Gemini LLM API when configured, with deterministic offline fallback.
         """
@@ -286,9 +327,15 @@ class AgenticNegotiator:
         # 2. Offline / Standalone Rule-Based Intent Parser Fallback
         msg = message.lower()
         
+        # Check for escalatable intent
+        escalate_keywords = ["fraud", "legal", "police", "dispute", "angry", "terrible", "lawyer"]
+        if any(k in msg for k in escalate_keywords):
+            return (0.0, 0, "escalate")
+
         # Parse Percentage (e.g., "40%", "30 percent")
         pct_match = re.search(r'(\d+)\s*(%|percent)', msg)
         proposed_amount_inr = 0.0
+        intent = "proposal"
 
         if pct_match:
             pct_val = float(pct_match.group(1))
@@ -332,7 +379,7 @@ class AgenticNegotiator:
         elif "2 weeks" in msg or "14 days" in msg:
             extension_days = 14
 
-        return (proposed_amount_inr, extension_days)
+        return (proposed_amount_inr, extension_days, intent)
 
     def _record_payment_link(
         self,

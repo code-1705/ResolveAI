@@ -34,6 +34,7 @@ class MasterInvoice:
     remaining_amount_paise: int = 0  # Stored strictly as integer paise
     due_date: str = ""  # YYYY-MM-DD
     status: InvoiceStatus = InvoiceStatus.UNPAID
+    requires_human_attention: bool = False
 
     @property
     def original_amount_inr(self) -> float:

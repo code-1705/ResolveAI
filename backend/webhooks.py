@@ -18,22 +18,56 @@ from backend.whatsapp_client import whatsapp_client
 from backend.session_manager import session_manager
 from backend.guardrails import paise_to_inr
 
+import redis.asyncio as redis_async
+
+# Redis Client Initialization
+redis_client = None
+if settings.REDIS_URL:
+    try:
+        redis_client = redis_async.from_url(settings.REDIS_URL)
+    except Exception as e:
+        pass
+
 # Invoice Row Locks (Per invoice_id asyncio / thread Lock dictionary to prevent concurrent webhook race conditions)
 INVOICE_ROW_LOCKS: Dict[str, asyncio.Lock] = {}
 INVOICE_LOCK_INIT_MUTEX = threading.Lock()
 
-def get_invoice_lock(invoice_id: str) -> asyncio.Lock:
-    """Returns an asyncio.Lock bound to the current running event loop."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
-    loop_id = id(loop)
-    with INVOICE_LOCK_INIT_MUTEX:
-        key = f"{loop_id}_{invoice_id}"
-        if key not in INVOICE_ROW_LOCKS:
-            INVOICE_ROW_LOCKS[key] = asyncio.Lock()
-        return INVOICE_ROW_LOCKS[key]
+class InvoiceLock:
+    def __init__(self, invoice_id: str):
+        self.invoice_id = invoice_id
+        self.redis_lock = None
+        self.memory_lock = None
+        
+        if redis_client:
+            self.redis_lock = redis_client.lock(f"lock:invoice:{invoice_id}", timeout=30)
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+            loop_id = id(loop)
+            with INVOICE_LOCK_INIT_MUTEX:
+                key = f"{loop_id}_{invoice_id}"
+                if key not in INVOICE_ROW_LOCKS:
+                    INVOICE_ROW_LOCKS[key] = asyncio.Lock()
+                self.memory_lock = INVOICE_ROW_LOCKS[key]
+
+    async def __aenter__(self):
+        if self.redis_lock:
+            await self.redis_lock.acquire(blocking=True)
+        else:
+            await self.memory_lock.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.redis_lock:
+            await self.redis_lock.release()
+        else:
+            self.memory_lock.release()
+
+def get_invoice_lock(invoice_id: str) -> InvoiceLock:
+    """Returns a Distributed Redis Lock (or falls back to asyncio.Lock)."""
+    return InvoiceLock(invoice_id)
 
 # --- Meta WhatsApp Webhook Handlers ---
 

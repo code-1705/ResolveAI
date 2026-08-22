@@ -1,5 +1,6 @@
 import os
 from pydantic import BaseModel
+from typing import Optional
 
 # Load .env file automatically if python-dotenv is installed or read manually
 env_file_path = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -42,5 +43,25 @@ class Settings(BaseModel):
     
     # Database Configuration
     DATABASE_PATH: str = os.path.join(os.path.dirname(__file__), "resolve_ai.db")
+    
+    # In test mode, fallback to SQLite by ignoring the .env postgres URL
+    @property
+    def is_test_env(self) -> bool:
+        import sys
+        return bool(os.getenv("PYTEST_CURRENT_TEST")) or "unittest" in sys.argv[0] or any("unittest" in arg for arg in sys.argv)
+        
+    @property
+    def get_db_url(self) -> Optional[str]:
+        return None if self.is_test_env else os.getenv("DATABASE_URL")
+        
+    @property
+    def get_redis_url(self) -> Optional[str]:
+        return None if self.is_test_env else os.getenv("REDIS_URL")
+        
+    DATABASE_URL: Optional[str] = os.getenv("DATABASE_URL")
+    REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
 
 settings = Settings()
+if settings.is_test_env:
+    settings.DATABASE_URL = None
+    settings.REDIS_URL = None

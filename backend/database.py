@@ -42,13 +42,56 @@ def validate_fsm_transition(current_status: str, new_status: str) -> bool:
         )
     return True
 
-def get_connection(db_path: str = settings.DATABASE_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    # Configure WAL mode and busy timeout for high concurrency
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
-    return conn
+import psycopg2
+from psycopg2.extras import DictCursor
+
+class DBCursorWrapper:
+    def __init__(self, cursor, is_postgres: bool):
+        self.cursor = cursor
+        self.is_postgres = is_postgres
+
+    def execute(self, query: str, params: tuple = ()):
+        if self.is_postgres:
+            # Convert SQLite '?' to Postgres '%s'
+            query = query.replace('?', '%s')
+            # Convert SQLite AUTOINCREMENT to Postgres SERIAL
+            query = query.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
+        return self.cursor.execute(query, params)
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+class DBConnectionWrapper:
+    def __init__(self, conn, is_postgres: bool):
+        self.conn = conn
+        self.is_postgres = is_postgres
+
+    def cursor(self):
+        cur = self.conn.cursor(cursor_factory=DictCursor) if self.is_postgres else self.conn.cursor()
+        return DBCursorWrapper(cur, self.is_postgres)
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        self.conn.close()
+
+def get_connection(db_path: str = settings.DATABASE_PATH):
+    if settings.DATABASE_URL and settings.DATABASE_URL.startswith("postgres"):
+        conn = psycopg2.connect(settings.DATABASE_URL)
+        return DBConnectionWrapper(conn, is_postgres=True)
+    else:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+        return DBConnectionWrapper(conn, is_postgres=False)
 
 def init_db(db_path: str = settings.DATABASE_PATH):
     conn = get_connection(db_path)
@@ -76,9 +119,18 @@ def init_db(db_path: str = settings.DATABASE_PATH):
         paid_amount_paise INTEGER NOT NULL DEFAULT 0,
         remaining_amount_paise INTEGER NOT NULL,
         due_date TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'UNPAID'
+        status TEXT NOT NULL DEFAULT 'UNPAID',
+        requires_human_attention BOOLEAN NOT NULL DEFAULT FALSE
     );
     """)
+    conn.commit()
+    try:
+        cursor.execute("ALTER TABLE master_invoices ADD COLUMN requires_human_attention BOOLEAN NOT NULL DEFAULT FALSE;")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    cursor = conn.cursor()
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoices_phone ON master_invoices(customer_phone);")
 
     # 3. Transaction Ledger Table (UNIQUE razorpay_payment_id)
@@ -182,8 +234,8 @@ def upsert_invoice(invoice: MasterInvoice, db_path: str = settings.DATABASE_PATH
     conn = get_connection(db_path)
     cursor = conn.cursor()
     cursor.execute("""
-    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(invoice_id) DO UPDATE SET
         customer_name=excluded.customer_name,
         customer_phone=excluded.customer_phone,
@@ -191,7 +243,8 @@ def upsert_invoice(invoice: MasterInvoice, db_path: str = settings.DATABASE_PATH
         paid_amount_paise=excluded.paid_amount_paise,
         remaining_amount_paise=excluded.remaining_amount_paise,
         due_date=excluded.due_date,
-        status=excluded.status;
+        status=excluded.status,
+        requires_human_attention=excluded.requires_human_attention;
     """, (
         invoice.invoice_id,
         invoice.customer_name,
@@ -200,7 +253,8 @@ def upsert_invoice(invoice: MasterInvoice, db_path: str = settings.DATABASE_PATH
         invoice.paid_amount_paise,
         invoice.remaining_amount_paise,
         invoice.due_date,
-        invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status
+        invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status,
+        invoice.requires_human_attention
     ))
     conn.commit()
     conn.close()
@@ -221,7 +275,8 @@ def get_invoice(invoice_id: str, db_path: str = settings.DATABASE_PATH) -> Optio
             paid_amount_paise=row["paid_amount_paise"],
             remaining_amount_paise=row["remaining_amount_paise"],
             due_date=row["due_date"],
-            status=InvoiceStatus(row["status"])
+            status=InvoiceStatus(row["status"]),
+            requires_human_attention=bool(dict(row).get("requires_human_attention", False))
         )
     return None
 
@@ -240,7 +295,8 @@ def get_invoices_by_phone(phone: str, db_path: str = settings.DATABASE_PATH) -> 
             paid_amount_paise=r["paid_amount_paise"],
             remaining_amount_paise=r["remaining_amount_paise"],
             due_date=r["due_date"],
-            status=InvoiceStatus(r["status"])
+            status=InvoiceStatus(r["status"]),
+            requires_human_attention=bool(dict(r).get("requires_human_attention", False))
         ) for r in rows
     ]
 
@@ -286,6 +342,7 @@ def record_transaction(
         conn.commit()
         conn.close()
         return (True, False)  # Successfully inserted
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, psycopg2.IntegrityError):
+        conn.rollback()
         conn.close()
         return (False, True)  # Duplicate payment_id caught cleanly!

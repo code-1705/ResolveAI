@@ -124,7 +124,7 @@ export default function App() {
     if (selectedInvoice) {
       fetchChatHistory(selectedInvoice);
     }
-  }, [selectedInvoiceId, invoices.length]);
+  }, [selectedInvoiceId, invoices]); // Fix: re-fetch chat when invoice balance changes
 
   // Send message to simulator
   const handleSendMessage = async (customText = null) => {
@@ -641,7 +641,7 @@ export default function App() {
                     {msg.text}
 
                     {/* Interactive Payment Button inside Chat Bubble when payment link is generated */}
-                    {msg.sender === 'agent' && (msg.text.includes('https://rzp.io/') || msg.text.includes('payment link')) && selectedInvoice && selectedInvoice.remaining_amount_inr > 0 && (
+                    {msg.sender === 'agent' && (msg.metadata?.payment_link_url || msg.text.includes('https://rzp.io/')) && selectedInvoice && selectedInvoice.remaining_amount_inr > 0 && (
                       <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
                         <button
                           onClick={() => handleRazorpayCheckout(selectedInvoice)}

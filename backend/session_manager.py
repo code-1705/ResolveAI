@@ -3,30 +3,63 @@ import threading
 import json
 import datetime
 from typing import Dict, Any, List, Optional
+import redis.asyncio as redis_async
 from backend.config import settings
 from backend.models import ChatSession, ChatMessage
 from backend.database import get_connection, get_invoice
 from backend.guardrails import paise_to_inr
 
-# Session locks with multi-loop asyncio safety
+# Redis Client Initialization
+redis_client = None
+if settings.REDIS_URL:
+    try:
+        redis_client = redis_async.from_url(settings.REDIS_URL)
+    except Exception as e:
+        print(f"Warning: Failed to connect to Redis: {e}")
+
+# In-Memory Fallback Session locks
 SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
 SESSION_LOCK_MUTEX = threading.Lock()
 
-def get_session_lock(session_id: str) -> asyncio.Lock:
+class SessionLock:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.redis_lock = None
+        self.memory_lock = None
+        
+        if redis_client:
+            self.redis_lock = redis_client.lock(f"lock:session:{session_id}", timeout=30)
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+            loop_id = id(loop)
+            with SESSION_LOCK_MUTEX:
+                key = f"{loop_id}_{session_id}"
+                if key not in SESSION_LOCKS:
+                    SESSION_LOCKS[key] = asyncio.Lock()
+                self.memory_lock = SESSION_LOCKS[key]
+
+    async def __aenter__(self):
+        if self.redis_lock:
+            await self.redis_lock.acquire(blocking=True)
+        else:
+            await self.memory_lock.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.redis_lock:
+            await self.redis_lock.release()
+        else:
+            self.memory_lock.release()
+
+def get_session_lock(session_id: str) -> SessionLock:
     """
-    Returns an asyncio.Lock bound to the current running event loop for the session_id.
-    Prevents double-texting race conditions from executing parallel LLM tool calls.
+    Returns a Distributed Redis Lock (or falls back to asyncio.Lock).
+    Prevents double-texting race conditions across multiple server instances.
     """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
-    loop_id = id(loop)
-    with SESSION_LOCK_MUTEX:
-        key = f"{loop_id}_{session_id}"
-        if key not in SESSION_LOCKS:
-            SESSION_LOCKS[key] = asyncio.Lock()
-        return SESSION_LOCKS[key]
+    return SessionLock(session_id)
 
 class SessionManager:
     def __init__(self, db_path: Optional[str] = None):
