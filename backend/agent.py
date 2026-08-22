@@ -1,6 +1,9 @@
 import asyncio
 import datetime
+import time
 import re
+import json
+import requests
 from typing import Dict, Any, Tuple, Optional, List
 from backend.config import settings
 from backend.models import MasterInvoice, InvoiceStatus, PaymentLinkStatus
@@ -125,8 +128,9 @@ class AgenticNegotiator:
                 effective_days = min(approved_extension, 180)
                 expiry_timestamp = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=effective_days)).replace(hour=23, minute=59, second=59).timestamp())
 
-                # Generate reference_id payload idempotency key (max 40 chars)
-                reference_id = f"ref_{session_id[:20]}_t{turn_count}"[:40]
+                # Generate unique reference_id payload idempotency key (max 40 chars)
+                ts_suffix = str(int(time.time()))[-6:]
+                reference_id = f"ref_{invoice_id[:15]}_t{turn_count}_{ts_suffix}"[:40]
 
                 try:
                     # Call Razorpay Payment Links API
@@ -205,6 +209,66 @@ class AgenticNegotiator:
                 "trace": trace_payload
             }
 
+    def _call_gemini_llm_parser(
+        self,
+        message: str,
+        invoice: MasterInvoice,
+        guardrails: Any
+    ) -> Optional[Tuple[float, int]]:
+        """
+        Calls Google Gemini REST API to dynamically understand natural language proposals and extract structured parameters.
+        """
+        if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("your_google"):
+            return None
+
+        prompt = f"""
+        You are the NLU intent parser for Resolve.ai, an Indian SME collection platform.
+        Customer Message: "{message}"
+        Invoice Remaining Outstanding Balance: ₹{invoice.remaining_amount_inr}
+        Merchant Guardrail Limits: Minimum partial payment {guardrails.min_partial_payment_pct}%, Max allowed extension {guardrails.max_extension_days} days.
+
+        Analyze the customer message and return a valid raw JSON object:
+        {{
+          "user_intent": "proposal" | "inability_to_pay" | "text_payment_claim" | "general_query",
+          "proposed_amount_inr": number or 0,
+          "requested_extension_days": number or {guardrails.max_extension_days},
+          "reasoning": "brief explanation"
+        }}
+        Return ONLY raw valid JSON. No markdown backticks.
+        """
+
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"response_mime_type": "application/json"}
+            }
+
+            resp = requests.post(url, headers=headers, json=payload, timeout=4.0)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = json.loads(text_resp)
+
+                amt = parsed.get("proposed_amount_inr")
+                days = parsed.get("requested_extension_days")
+                intent = parsed.get("user_intent")
+
+                if intent == "inability_to_pay":
+                    proposed_amount = 0.0
+                elif amt is not None:
+                    proposed_amount = float(amt)
+                else:
+                    proposed_amount = round(invoice.remaining_amount_inr * 0.40, 2)
+
+                ext_days = int(days) if days is not None else guardrails.max_extension_days
+                return (proposed_amount, ext_days)
+        except Exception:
+            pass
+
+        return None
+
     def _parse_proposal_intent(
         self,
         message: str,
@@ -212,11 +276,17 @@ class AgenticNegotiator:
         guardrails: Any
     ) -> Tuple[float, int]:
         """
-        Parses numerical payment proposals (amounts or percentages) and requested extension days from user text.
+        Parses payment proposals using Google Gemini LLM API when configured, with deterministic offline fallback.
         """
+        # 1. First attempt dynamic LLM Intent Parsing via Google Gemini API
+        llm_parsed = self._call_gemini_llm_parser(message, invoice, guardrails)
+        if llm_parsed is not None:
+            return llm_parsed
+
+        # 2. Offline / Standalone Rule-Based Intent Parser Fallback
         msg = message.lower()
         
-        # 1. Parse Percentage (e.g., "40%", "30 percent")
+        # Parse Percentage (e.g., "40%", "30 percent")
         pct_match = re.search(r'(\d+)\s*(%|percent)', msg)
         proposed_amount_inr = 0.0
 
@@ -224,7 +294,7 @@ class AgenticNegotiator:
             pct_val = float(pct_match.group(1))
             proposed_amount_inr = round(invoice.remaining_amount_inr * (pct_val / 100.0), 2)
         else:
-            # 2. Parse Absolute INR Amount (e.g. "20000", "₹20,000", "20k", "20000 rupees")
+            # Parse Absolute INR Amount (e.g. "20000", "₹20,000", "20k", "20000 rupees")
             k_match = re.search(r'(\d+(?:\.\d+)?)\s*k\b', msg)
             if k_match:
                 proposed_amount_inr = float(k_match.group(1)) * 1000.0
@@ -236,16 +306,27 @@ class AgenticNegotiator:
                     if val > 100:  # Ignore small numbers like dates
                         proposed_amount_inr = val
 
-        # Default fallback if no amount detected -> 40% of remaining balance
-        if proposed_amount_inr <= 0:
-            proposed_amount_inr = round(invoice.remaining_amount_inr * 0.40, 2)
+        # Check for explicitly stated inability to pay or delay
+        inability_keywords = ["won't be able to pay", "can't pay", "cannot pay", "no money", "delay", "unable to pay", "can't do today"]
+        has_inability_claim = any(k in msg for k in inability_keywords)
 
-        # 3. Parse Extension Days (e.g., "7 days", "next week", "14 days")
+        # Default fallback if no amount detected
+        if proposed_amount_inr <= 0:
+            if has_inability_claim:
+                proposed_amount_inr = 0.0  # Zero payment offer -> Force Guardrail REJECT & Counter-offer
+            else:
+                proposed_amount_inr = round(invoice.remaining_amount_inr * 0.40, 2)
+
+        # Parse Extension Days (e.g., "7 days", "next week", "14 days", "another month", "1 month")
         days_match = re.search(r'(\d+)\s*(?:days?|date extension)', msg)
         extension_days = guardrails.max_extension_days
 
         if days_match:
             extension_days = int(days_match.group(1))
+        elif "another month" in msg or "1 month" in msg or "next month" in msg:
+            extension_days = 30
+        elif "2 months" in msg:
+            extension_days = 60
         elif "next week" in msg or "7 days" in msg:
             extension_days = 7
         elif "2 weeks" in msg or "14 days" in msg:

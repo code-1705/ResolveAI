@@ -73,6 +73,9 @@ export default function App() {
           setSseConnected(true);
         } else if (payload.type === 'payment_reconciled') {
           fetchData();
+          if (selectedInvoice) {
+            fetchChatHistory(selectedInvoice);
+          }
         } else if (payload.type === 'guardrails_updated') {
           setGuardrails(payload.data);
         } else if (payload.type === 'chat_message_processed') {
@@ -102,6 +105,26 @@ export default function App() {
   }, [chatMessages]);
 
   const selectedInvoice = invoices.find(i => i.invoice_id === selectedInvoiceId) || invoices[0];
+
+  // Fetch chat history for selected invoice
+  const fetchChatHistory = async (inv) => {
+    if (!inv) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/chat/history?invoice_id=${inv.invoice_id}&customer_phone=${encodeURIComponent(inv.customer_phone)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setChatMessages(data.messages || []);
+      }
+    } catch (err) {
+      console.error('Error fetching chat history:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedInvoice) {
+      fetchChatHistory(selectedInvoice);
+    }
+  }, [selectedInvoiceId, invoices.length]);
 
   // Send message to simulator
   const handleSendMessage = async (customText = null) => {
@@ -180,6 +203,98 @@ export default function App() {
       }
     } catch (err) {
       alert('Failed to create bill: ' + err.message);
+    }
+  };
+
+  // Razorpay Standard Web Checkout Modal Handler
+  const handleRazorpayCheckout = async (inv) => {
+    if (!inv || inv.remaining_amount_paise < 100) {
+      alert("Invoice remaining amount must be at least ₹1.00 (100 paise).");
+      return;
+    }
+
+    try {
+      // 1. Call Backend POST /api/create-order
+      const orderRes = await fetch(`${API_BASE}/api/create-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount_in_paise: inv.remaining_amount_paise,
+          invoice_id: inv.invoice_id,
+          receipt: `rcpt_${inv.invoice_id}_${Date.now()}`
+        })
+      });
+
+      if (!orderRes.ok) {
+        const errData = await orderRes.json();
+        throw new Error(errData.detail || "Failed to create checkout order.");
+      }
+
+      const orderData = await orderRes.json();
+      const razorpayKey = import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_TSnypXFHb8t7Sc';
+
+      // 2. Open Razorpay Checkout Modal
+      const options = {
+        key: razorpayKey,
+        amount: orderData.amount,
+        currency: orderData.currency || 'INR',
+        name: 'Resolve.ai SME Collections',
+        description: `Payment for Invoice ${inv.invoice_id}`,
+        image: 'https://razorpay.com/favicon.ico',
+        order_id: orderData.order_id,
+        handler: async (response) => {
+          // 3. On Payment Success -> Send signatures to Backend POST /api/verify-payment
+          try {
+            const verifyRes = await fetch(`${API_BASE}/api/verify-payment`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                invoice_id: inv.invoice_id
+              })
+            });
+
+            if (verifyRes.ok) {
+              alert(`🎉 Payment Verified Successfully!\nPayment ID: ${response.razorpay_payment_id}`);
+              fetchData();
+              fetchChatHistory(inv);
+            } else {
+              const verifyErr = await verifyRes.json();
+              alert(`⚠️ Payment Verification Failed: ${verifyErr.detail || "Signature Mismatch"}`);
+            }
+          } catch (verifyError) {
+            alert(`⚠️ Error verifying payment: ${verifyError.message}`);
+          }
+        },
+        prefill: {
+          name: inv.customer_name,
+          contact: inv.customer_phone,
+          email: 'customer@example.com'
+        },
+        theme: {
+          color: '#3B82F6'
+        },
+        modal: {
+          ondismiss: () => {
+            console.log("User cancelled Razorpay checkout modal.");
+          }
+        }
+      };
+
+      if (window.Razorpay) {
+        const rzp = new window.Razorpay(options);
+        rzp.on('payment.failed', (resp) => {
+          alert(`❌ Payment Failed: ${resp.error.description || "Transaction failed"}`);
+        });
+        rzp.open();
+      } else {
+        alert("Razorpay SDK not loaded. Please refresh the page.");
+      }
+
+    } catch (err) {
+      alert(`Checkout Error: ${err.message}`);
     }
   };
 
@@ -347,7 +462,24 @@ export default function App() {
                         ₹{inv.remaining_amount_inr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </td>
                       <td style={{ padding: '16px' }}>{getStatusBadge(inv.status)}</td>
-                      <td style={{ padding: '16px', textAlign: 'right' }}>
+                      <td style={{ padding: '16px', textAlign: 'right', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                        {inv.remaining_amount_inr > 0 && (
+                          <button
+                            onClick={() => handleRazorpayCheckout(inv)}
+                            style={{
+                              padding: '6px 14px',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(16, 185, 129, 0.4)',
+                              background: 'rgba(16, 185, 129, 0.15)',
+                              color: 'var(--success)',
+                              cursor: 'pointer',
+                              fontSize: '0.8rem',
+                              fontWeight: '600'
+                            }}
+                          >
+                            Pay via Razorpay 💳
+                          </button>
+                        )}
                         <button
                           onClick={() => {
                             setSelectedInvoiceId(inv.invoice_id);
@@ -507,6 +639,34 @@ export default function App() {
                     }}
                   >
                     {msg.text}
+
+                    {/* Interactive Payment Button inside Chat Bubble when payment link is generated */}
+                    {msg.sender === 'agent' && (msg.text.includes('https://rzp.io/') || msg.text.includes('payment link')) && selectedInvoice && selectedInvoice.remaining_amount_inr > 0 && (
+                      <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                        <button
+                          onClick={() => handleRazorpayCheckout(selectedInvoice)}
+                          style={{
+                            width: '100%',
+                            padding: '8px 14px',
+                            borderRadius: '6px',
+                            background: 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
+                            color: '#FFF',
+                            border: 'none',
+                            fontWeight: '700',
+                            fontSize: '0.82rem',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                            boxShadow: '0 2px 8px rgba(16, 185, 129, 0.4)'
+                          }}
+                        >
+                          💳 Pay Now via Razorpay (Test Mode)
+                        </button>
+                      </div>
+                    )}
+
                     <div style={{ fontSize: '0.65rem', color: '#8696A0', textAlign: 'right', marginTop: '4px' }}>
                       {msg.timestamp}
                     </div>

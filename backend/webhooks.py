@@ -1,5 +1,7 @@
 import asyncio
 import threading
+import datetime
+import re
 from typing import Dict, Any, Tuple, Optional, List
 from backend.config import settings
 from backend.models import InvoiceStatus, PaymentLinkStatus
@@ -13,6 +15,8 @@ from backend.database import (
 )
 from backend.razorpay_client import razorpay_client
 from backend.whatsapp_client import whatsapp_client
+from backend.session_manager import session_manager
+from backend.guardrails import paise_to_inr
 
 # Invoice Row Locks (Per invoice_id asyncio / thread Lock dictionary to prevent concurrent webhook race conditions)
 INVOICE_ROW_LOCKS: Dict[str, asyncio.Lock] = {}
@@ -187,13 +191,18 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
             invoice_id = row["invoice_id"]
 
     if not invoice_id:
-        # Default fallback match from reference_id if present
+        # Default fallback match from reference_id or description if present
         ref_id = payment_link_entity.get("reference_id", "")
         if "_" in ref_id:
-            # ref_{session_id}_{turn} -> reference parsing
             parts = ref_id.split("_")
             if len(parts) >= 3:
-                invoice_id = parts[2]
+                invoice_id = parts[1] if parts[1].startswith("inv_") else (parts[2] if len(parts) > 2 and parts[2].startswith("inv_") else None)
+
+        if not invoice_id:
+            desc = payment_entity.get("description", "") or payment_link_entity.get("description", "")
+            desc_match = re.search(r'(inv_[a-zA-Z0-9_]+)', desc)
+            if desc_match:
+                invoice_id = desc_match.group(1)
 
     if not invoice_id or not razorpay_payment_id:
         return {"status": "ignored", "reason": "missing_invoice_id_or_payment_id"}
@@ -241,11 +250,57 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
             except Exception:
                 pass  # Ignore mock / API cancel errors gracefully
 
+        # 7. Append Automated Payment Confirmation Message to ChatSession
+        session_id = f"{invoice.customer_phone}_{invoice_id}"
+        amount_inr = paise_to_inr(amount_paise)
+        remaining_inr = paise_to_inr(new_remaining_paise)
+        
+        if target_status == InvoiceStatus.PAID:
+            conf_text = (
+                f"🎉 Payment Confirmed! We received your payment of ₹{amount_inr:,.2f} (Payment ID: {razorpay_payment_id}). "
+                f"Your invoice '{invoice_id}' is now FULLY PAID! Thank you for clearing your balance."
+            )
+        else:
+            conf_text = (
+                f"✅ Payment Received! We confirmed your payment of ₹{amount_inr:,.2f} (Payment ID: {razorpay_payment_id}). "
+                f"Your new remaining balance is ₹{remaining_inr:,.2f}."
+            )
+
+        conf_msg_obj = None
+        try:
+            conf_msg_obj = session_manager.add_message(
+                session_id=session_id,
+                sender="agent",
+                text=conf_text,
+                metadata={
+                    "payment_confirmation": True,
+                    "razorpay_payment_id": razorpay_payment_id,
+                    "amount_paid_inr": amount_inr,
+                    "remaining_inr": remaining_inr
+                }
+            )
+        except Exception:
+            pass
+
+        # Send WhatsApp text message confirmation to customer's phone if Meta WhatsApp integration is active
+        try:
+            whatsapp_client.send_text_message(invoice.customer_phone, conf_text)
+        except Exception:
+            pass
+
         return {
             "status": "reconciled",
             "invoice_id": invoice_id,
+            "session_id": session_id,
             "razorpay_payment_id": razorpay_payment_id,
             "amount_paid_paise": amount_paise,
             "new_remaining_paise": new_remaining_paise,
-            "new_status": target_status.value
+            "new_status": target_status.value,
+            "confirmation_message": conf_text,
+            "confirmation_msg_obj": {
+                "sender": "agent",
+                "text": conf_text,
+                "timestamp": conf_msg_obj.timestamp if conf_msg_obj else datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "metadata": {"payment_confirmation": True}
+            } if conf_msg_obj else None
         }

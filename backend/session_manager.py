@@ -5,7 +5,8 @@ import datetime
 from typing import Dict, Any, List, Optional
 from backend.config import settings
 from backend.models import ChatSession, ChatMessage
-from backend.database import get_connection
+from backend.database import get_connection, get_invoice
+from backend.guardrails import paise_to_inr
 
 # Session locks with multi-loop asyncio safety
 SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
@@ -63,11 +64,33 @@ class SessionManager:
                 messages=messages
             )
 
-        # Create new session
+        # Create new session with initial outbound agent reminder message
+        inv = get_invoice(invoice_id, self.db_path)
+        greeting_text = ""
+        if inv:
+            greeting_text = (
+                f"Hi {inv.customer_name}! This is Resolve.ai reaching out on behalf of your merchant regarding Invoice {invoice_id} "
+                f"for ₹{paise_to_inr(inv.remaining_amount_paise):,.2f}. Your due date is {inv.due_date}. "
+                "How would you like to resolve this bill today? Tap a quick proposal button below to start flexible terms."
+            )
+        else:
+            greeting_text = (
+                f"Hi! This is Resolve.ai reaching out regarding Invoice {invoice_id}. "
+                "How would you like to resolve this bill today?"
+            )
+
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        initial_messages = [{
+            "sender": "agent",
+            "text": greeting_text,
+            "timestamp": timestamp,
+            "metadata": {"outbound_initial_reminder": True}
+        }]
+
         cursor.execute("""
         INSERT INTO chat_sessions (session_id, invoice_id, customer_phone, messages_json)
-        VALUES (?, ?, ?, '[]');
-        """, (session_id, invoice_id, customer_phone))
+        VALUES (?, ?, ?, ?);
+        """, (session_id, invoice_id, customer_phone, json.dumps(initial_messages)))
         conn.commit()
         conn.close()
 
@@ -75,7 +98,14 @@ class SessionManager:
             session_id=session_id,
             invoice_id=invoice_id,
             customer_phone=customer_phone,
-            messages=[]
+            messages=[
+                ChatMessage(
+                    sender="agent",
+                    text=greeting_text,
+                    timestamp=timestamp,
+                    metadata={"outbound_initial_reminder": True}
+                )
+            ]
         )
 
     def add_message(

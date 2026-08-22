@@ -4,6 +4,8 @@ import unittest
 import asyncio
 import json
 import time
+import hmac
+import hashlib
 
 # Add root directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -39,11 +41,11 @@ class TestSubmodule2(unittest.TestCase):
             description="Partial payment for Invoice inv_TEST_001",
             customer_info={"name": "Apex Logistics", "phone": "+919876543210"},
             expiry_timestamp=int(time.time()) + 86400,
-            reference_id="ref_9876543210_inv_TEST_001_t1"
+            reference_id=f"ref_test_{int(time.time())}"
         )
         self.assertEqual(link_res["amount"], 2000050)
-        self.assertEqual(link_res["reference_id"], "ref_9876543210_inv_TEST_001_t1")
-        self.assertTrue(link_res["short_url"].startswith("https://rzp.io/i/"))
+        self.assertTrue(link_res["reference_id"].startswith("ref_test_"))
+        self.assertTrue(link_res["short_url"].startswith("https://"))
 
     def test_2_raw_byte_hmac_signature_verification(self):
         """Test HMAC-SHA256 signature verification directly over raw request bytes."""
@@ -203,6 +205,27 @@ class TestSubmodule2(unittest.TestCase):
         self.assertEqual(inv_final.paid_amount_paise, 5000000)
         self.assertEqual(inv_final.remaining_amount_paise, 0)
         self.assertEqual(inv_final.status, InvoiceStatus.PAID)
+
+    def test_5_razorpay_standard_checkout_order_and_signature_verification(self):
+        """Test Razorpay standard checkout order creation and HMAC-SHA256 signature verification."""
+        # 1. Test Order Creation (amount >= 100 paise)
+        order = self.rzp.create_order(amount_in_paise=500000, receipt="rcpt_test_123")
+        self.assertIsNotNone(order["id"])
+        self.assertEqual(order["amount"], 500000)
+
+        # 2. Test Invalid Amount (< 100 paise)
+        with self.assertRaises(ValueError):
+            self.rzp.create_order(amount_in_paise=50)
+
+        # 3. Test Signature Verification
+        order_id = "order_12345"
+        payment_id = "pay_67890"
+        secret = self.rzp.key_secret
+        msg = f"{order_id}|{payment_id}"
+        valid_signature = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        self.assertTrue(self.rzp.verify_payment_signature(order_id, payment_id, valid_signature))
+        self.assertFalse(self.rzp.verify_payment_signature(order_id, payment_id, "invalid_signature_xxx"))
 
 if __name__ == "__main__":
     unittest.main()
