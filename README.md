@@ -4,55 +4,57 @@
 
 ---
 
-## Submodule 1 Execution Summary
+## Completed Implementation Submodules
 
-### Features Implemented (`backend/`)
-1. **Configuration & Secrets Management (`backend/config.py`)**:
-   - Centralized Pydantic settings loading environment variables, default merchant guardrails, API credentials, and SQLite database paths.
-
-2. **Data Models & Schema (`backend/models.py`)**:
-   - **Integer Paise Storage**: All monetary fields (`original_amount_paise`, `paid_amount_paise`, `remaining_amount_paise`) stored strictly as 64-bit integer paise to eliminate floating-point precision drift (`₹50,000.10 -> 5000010 paise`).
-   - `MerchantGuardrails`: Editable negotiation thresholds (`min_partial_payment_pct`, `max_extension_days`, `max_split_installments`, `auto_discount_waiver_pct`, `tone`).
-   - `MasterInvoice`: Overdue invoice ledger with calculated INR helper properties.
-   - `TransactionLedger`: Ledger records with **`UNIQUE(razorpay_payment_id)`** index enforcing DB-level idempotency.
-   - `PaymentLinkRecord`: Tracks generated Razorpay links and statuses (`ACTIVE`, `PAID`, `CANCELLED`, `EXPIRED`).
-   - `ChatSession` & `ChatMessage`: Composite key routing (`session_id = f"{customer_phone}_{invoice_id}"`).
-
-3. **Database Engine & Finite State Machine (`backend/database.py`)**:
-   - SQLite WAL Mode (`PRAGMA journal_mode=WAL;`) with 5000ms busy timeout for high async concurrency.
-   - **Directional FSM State Validation (`validate_fsm_transition`)**:
-     $$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIALLY\_PAID} \longrightarrow \text{PAID}$$
-     Locks terminal states (`PAID`, `CANCELLED`) and rejects backward state transitions (`FSMStateError`).
-   - DB-level catch for duplicate `razorpay_payment_id` insertions.
-
+### Submodule 1: Core Database, Models & Guardrail Engine (`backend/`)
+1. **Configuration & Secrets (`backend/config.py`)**: Centralized Pydantic settings loading environment variables, merchant defaults, and DB paths.
+2. **Data Schemas & Models (`backend/models.py`)**:
+   - Integer paise currency storage (`original_amount_paise`, `paid_amount_paise`, `remaining_amount_paise`).
+   - `MerchantGuardrails`, `MasterInvoice`, `TransactionLedger` (`UNIQUE(razorpay_payment_id)`), `PaymentLinkRecord`, `ChatSession` (`f"{phone}_{invoice_id}"`), `ChatMessage`.
+3. **Database Engine & FSM Validation (`backend/database.py`)**:
+   - SQLite WAL mode (`PRAGMA journal_mode=WAL;`) with 5000ms busy timeout.
+   - Non-reversible FSM state machine ($\text{UNPAID} \rightarrow \text{NEGOTIATING} \rightarrow \text{PARTIALLY\_PAID} \rightarrow \text{PAID}$).
 4. **Deterministic Guardrail Engine (`backend/guardrails.py`)**:
-   - Currency math helpers (`inr_to_paise`, `paise_to_inr`).
-   - `GuardrailEngine.validate_proposal()` enforcing 4 invariant bounds:
-     - **Floor Check**: `proposed_amount_paise >= min_required_paise`
-     - **Ceiling Check**: `proposed_amount_paise <= remaining_amount_paise`
-     - **Razorpay 180-Day Cap**: `extension_days <= min(max_extension_days, 180)`
-     - **Counter-Offer Generation**: Returns structured counter-offer terms when proposals breach guardrails.
+   - Floor check (`proposed >= min_required`), Ceiling check (`proposed <= remaining`), and Razorpay 180-day cap check.
+
+### Submodule 2: Razorpay API Client & Meta Webhook Engines (`backend/`)
+1. **Razorpay Client & Payload Idempotency (`backend/razorpay_client.py`)**:
+   - `create_payment_link()` with `"reference_id": f"ref_{session_id[:20]}_t{turn}"` (max 40 chars) payload idempotency.
+   - `cancel_payment_link()` deactivating superseded active links.
+   - `verify_webhook_signature()` validating HMAC-SHA256 directly over raw request bytes.
+2. **Meta WhatsApp Cloud API Client (`backend/whatsapp_client.py`)**:
+   - `send_text_message()` and `send_interactive_buttons()` (multi-invoice button prompt).
+3. **Meta & Razorpay Webhook Engine (`backend/webhooks.py`)**:
+   - `verify_meta_webhook()` GET challenge handshake (`hub.challenge`).
+   - `process_whatsapp_webhook()` parsing both `type == "text"` and `type == "interactive"` button replies for composite session key binding (`f"{customer_phone}_{invoice_id}"`).
+   - `reconcile_payment_event()` async reconciler executing integer paise math, FSM updates, and link deactivation strictly inside invoice row locks (`async with invoice_locks[invoice_id]:`).
 
 ---
 
 ## Verification Results
 
-Submodule 1 unit tests (`backend/test_submodule1.py`) executed and passed cleanly:
-
+### Submodule 1 Unit Tests (`backend/test_submodule1.py`)
 ```bash
 python -m unittest backend/test_submodule1.py
 ```
+- `test_1_currency_math`: PASSED
+- `test_2_fsm_lifecycle_transitions`: PASSED
+- `test_3_database_operations`: PASSED
+- `test_4_unique_payment_id_idempotency`: PASSED
+- `test_5_guardrail_engine_validation`: PASSED
 
-### Test Suite Output:
-- `test_1_currency_math`: PASSED (Exact integer paise conversion)
-- `test_2_fsm_lifecycle_transitions`: PASSED (FSM state enforcement & terminal locking)
-- `test_3_database_operations`: PASSED (WAL mode DB table creation & queries)
-- `test_4_unique_payment_id_idempotency`: PASSED (UNIQUE constraint duplicate catch)
-- `test_5_guardrail_engine_validation`: PASSED (Floor, ceiling, and 180-day cap checks)
+### Submodule 2 Unit Tests (`backend/test_submodule2.py`)
+```bash
+python -m unittest backend/test_submodule2.py
+```
+- `test_1_razorpay_payment_link_reference_id_idempotency`: PASSED
+- `test_2_raw_byte_hmac_signature_verification`: PASSED
+- `test_3_meta_whatsapp_webhook_handshake_and_routing`: PASSED
+- `test_4_asynchronous_row_locked_webhook_reconciliation`: PASSED
 
 ```text
 ----------------------------------------------------------------------
-Ran 5 tests in 0.230s
+Ran 4 tests in 0.277s
 
 OK
 ```
@@ -65,21 +67,19 @@ OK
 c:\Users\Vansh\Desktop\TrustBridge\
 ├── backend/
 │   ├── config.py           # Application settings & secrets
-│   ├── models.py           # Pydantic & dataclass schemas
+│   ├── models.py           # Dataclass & Pydantic schemas
 │   ├── database.py         # SQLite WAL connection & FSM validator
 │   ├── guardrails.py       # Deterministic rule engine & currency math
-│   └── test_submodule1.py  # Submodule 1 unit test suite
-├── implementation_plans/   # Submodule plan documentation
-│   ├── master_implementation_roadmap.md
-│   ├── plan_1_database_and_guardrails.md
-│   ├── plan_2_razorpay_and_webhooks.md
-│   ├── plan_3_agent_and_session_manager.md
-│   ├── plan_4_fastapi_server.md
-│   └── plan_5_frontend_dashboard_and_simulator.md
+│   ├── razorpay_client.py  # Razorpay SDK client & reference_id idempotency
+│   ├── whatsapp_client.py  # Meta Graph API WhatsApp client
+│   ├── webhooks.py         # Meta & Razorpay webhook engine + row locking
+│   ├── test_submodule1.py  # Submodule 1 unit test suite
+│   └── test_submodule2.py  # Submodule 2 unit test suite
+├── implementation_plans/   # Detailed implementation plans
 └── README.md
 ```
 
 ---
 
 ## Next Steps
-- **Submodule 2**: Implement Razorpay API Client (with `"reference_id"` payload idempotency & superseded link cancellation) and Meta WhatsApp Webhooks.
+- **Submodule 3**: Implement Agentic LLM Negotiation Engine & Session Manager (`session_manager.py`, `agent.py`).
