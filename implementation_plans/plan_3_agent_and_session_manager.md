@@ -1,7 +1,7 @@
 # Implementation Plan - Submodule 3: LLM Negotiation Agent & Session Manager
 
 ## Overview
-Submodule 3 implements the natural language negotiation brain of **Resolve.ai**. It manages composite conversation state via `ChatSession` (`f"{phone}_{invoice_id}"`), resolves multi-invoice WhatsApp routing (including interactive button payload ingestion), prevents double-texting race conditions using atomic session locks, calculates valid Unix payment link expiration timestamps (capped at Razorpay's 180-day platform limit), passes `X-Idempotency-Key` headers on tool execution, constructs prompts with multi-turn history, enforces anti-hallucination rules regarding fund confirmations, invokes LLM Tool Calling, enforces a hard deterministic `GuardrailEngine` safety gateway, and outputs visual Agent Traces.
+Submodule 3 implements the natural language negotiation brain of **Resolve.ai**. It manages composite conversation state via `ChatSession` (`f"{phone}_{invoice_id}"`), resolves multi-invoice WhatsApp routing (including interactive button payload ingestion), prevents double-texting race conditions using atomic session locks, calculates valid Unix payment link expiration timestamps (capped at Razorpay's 180-day platform limit), generates unique `reference_id` JSON payloads for Razorpay idempotency, constructs prompts with multi-turn history, enforces anti-hallucination rules regarding fund confirmations, invokes LLM Tool Calling, enforces a hard deterministic `GuardrailEngine` safety gateway, and outputs visual Agent Traces.
 
 ---
 
@@ -28,10 +28,10 @@ Submodule 3 implements the natural language negotiation brain of **Resolve.ai**.
   2. Treat all LLM tool calls as untrusted. Amounts and extensions will be validated by the GuardrailEngine.
   ```
 
-- **Idempotency Key Generation**:
-  To prevent duplicate orphaned link creation if an LLM retries a tool call after a network blip:
+- **Razorpay Payload `reference_id` Generation**:
+  To prevent duplicate link creation on tool retries (Razorpay Payment Links API uses `reference_id` payload fields, not HTTP headers):
   ```python
-  idempotency_key = f"link_{session_id}_t{turn_count}_{proposed_amount_paise}"
+  reference_id = f"ref_{session_id[:20]}_t{turn_count}"  # Max 40 chars
   ```
 
 - **Unix Expiry Timestamp & 180-Day Cap Calculation**:
@@ -47,7 +47,7 @@ Submodule 3 implements the natural language negotiation brain of **Resolve.ai**.
   4. Evaluates tool calls against `GuardrailEngine.validate_proposal()`:
      - Checks `min_required_paise <= proposed_amount_paise <= remaining_amount_paise`.
      - Enforces `effective_days <= 180`.
-     - **If PASS**: Converts `amount_in_inr` -> `amount_in_paise`, computes `expiry_timestamp`, generates `idempotency_key`, executes `RazorpayClient.create_payment_link(..., idempotency_key=idempotency_key)`.
+     - **If PASS**: Converts `amount_in_inr` -> `amount_in_paise`, computes `expiry_timestamp`, generates `reference_id`, executes `RazorpayClient.create_payment_link(..., reference_id=reference_id)`.
      - **If REJECT**: Hard blocks Razorpay API call. Generates polite counter-offer.
   5. Wraps Razorpay API calls in `try / except` to handle API blips gracefully.
 
@@ -57,6 +57,6 @@ Submodule 3 implements the natural language negotiation brain of **Resolve.ai**.
 
 ### Automated Verification
 - Run `python backend/test_submodule3.py`:
-  1. Test tool idempotency key generation: Verify `idempotency_key` is passed to Razorpay client tool call.
+  1. Test tool `reference_id` generation: Verify `reference_id` (<=40 chars) is included in Razorpay payment link tool payload.
   2. Test text claim handling: User claims "I paid ₹50,000", verify LLM responds politely without marking invoice paid or hallucinating confirmation receipt.
   3. Test 180-day expiry cap: Request extension of 200 days, verify calculated timestamp is capped at 180 days.

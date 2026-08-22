@@ -2,7 +2,7 @@
 
 ## Overview
 Submodule 2 manages direct integration with financial and messaging API infrastructures:
-1. **Razorpay Payments**: Payment link generation with `X-Idempotency-Key` headers (preventing duplicate link creation on network retries), raw byte HMAC signature validation, idempotency enforcement via `TransactionLedger`, superseded link cancellation, and row-locked transaction reconciliation math.
+1. **Razorpay Payments**: Payment link generation with `reference_id` payload idempotency (max 40 chars, preventing duplicate link creation on network retries), raw byte HMAC signature validation, idempotency enforcement via `TransactionLedger`, superseded link cancellation, and row-locked transaction reconciliation math.
 2. **Asynchronous Non-Blocking Processing**: Returns HTTP 200 OK under 100ms to eliminate Razorpay retry storms.
 3. **Meta WhatsApp Cloud API**: Real production-grade Webhook receiver (`GET` verification handshake & `POST` message ingestion with text & interactive button/list payload extraction) and outbound Meta Graph API client.
 
@@ -10,11 +10,14 @@ Submodule 2 manages direct integration with financial and messaging API infrastr
 
 ## Technical Specifications & Architecture
 
-### 1. Razorpay API Client & Idempotency Header (`backend/razorpay_client.py`)
+### 1. Razorpay API Client & `reference_id` Payload Idempotency (`backend/razorpay_client.py`)
 - **`RazorpayClient`**:
-  - `create_payment_link(amount_in_paise: int, description: str, customer_info: dict, expiry_timestamp: int, idempotency_key: str = None) -> dict`:
+  - `create_payment_link(amount_in_paise: int, description: str, customer_info: dict, expiry_timestamp: int, reference_id: str) -> dict`:
     - Sends POST to `/v1/payment_links` formatted in exact integer paise and valid Unix timestamp `expiry_timestamp`.
-    - **Header Safeguard**: Includes `X-Idempotency-Key: idempotency_key` (derived from `f"link_{session_id}_{turn_count}_{amount_paise}"`). If a network timeout causes an LLM or client retry, Razorpay returns the existing payment link instead of creating a duplicate orphaned link.
+    - **Payload Idempotency Safeguard (`reference_id`)**:
+      Includes `"reference_id": reference_id` (e.g. `f"ref_{session_id[:20]}_{turn_count}"`, strictly $\le 40$ chars) in the JSON body.
+      > [!IMPORTANT]
+      > **Razorpay API Rule**: Razorpay's Payment Links API does not support `X-Idempotency-Key` headers; instead, Razorpay enforces strict account-level uniqueness on `reference_id`. If an LLM or network blip retries the tool call, Razorpay blocks duplicate creation based on the existing `reference_id`.
   - `cancel_payment_link(payment_link_id: str)`:
     - Sends POST to `/v1/payment_links/{payment_link_id}/cancel` to deactivate superseded payment links when a new agreement is reached.
   - `verify_webhook_signature(raw_body_bytes: bytes, signature: str, secret: str) -> bool`:
@@ -60,7 +63,7 @@ Submodule 2 manages direct integration with financial and messaging API infrastr
 
 ### Automated Verification
 - Run `python backend/test_submodule2.py`:
-  1. Test Razorpay `X-Idempotency-Key` header prevents duplicate link creation on simulated API retry.
+  1. Test Razorpay `reference_id` JSON payload uniqueness preventing duplicate payment link creation.
   2. Test background task balance math inside row lock: Verify accurate `remaining_amount_paise` deduction.
   3. Test Meta WhatsApp Interactive payload parser: Parse `type == "interactive"` button reply and confirm extraction of `invoice_id`.
   4. Test HMAC-SHA256 signature verification over raw bytes.

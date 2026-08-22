@@ -16,7 +16,7 @@
 
 ### Submodule 2: Razorpay API Client & Webhook Engines
 7. **Raw Byte Webhook HMAC Verification**: Verifying Razorpay HMAC-SHA256 signatures against `await request.body()` (raw bytes) before JSON parsing to preserve exact payload formatting.
-8. **Razorpay `X-Idempotency-Key` Headers**: Passing deterministic idempotency keys (`link_{session_id}_t{turn}_{amount}`) on `POST /v1/payment_links` requests to prevent duplicate link generation during LLM or network retries.
+8. **Razorpay `reference_id` Payload Idempotency**: Passing deterministic `reference_id` fields (`ref_{session_id[:20]}_t{turn}`) strictly $\le 40$ chars in `POST /v1/payment_links` JSON body to prevent duplicate link creation during retries (Razorpay Payment Links API enforces account-level uniqueness on `reference_id`, not HTTP headers).
 9. **Payment Link Lifecycle & Link Deactivation**: Storing `razorpay_payment_link_id` in `PaymentLinkRecord`, listening for `payment_link.paid`, and explicitly cancelling superseded links via `POST /v1/payment_links/{id}/cancel`.
 10. **Asynchronous Non-Blocking Webhook Processing**: Validating HMAC immediately, dispatching ledger processing to FastAPI `BackgroundTasks`, and instantly returning `200 OK` (<100ms) to eliminate Razorpay retry storms.
 11. **Strict Balance Math Execution Inside Row Lock**: Executing `MasterInvoice` balance deductions, FSM state determination, and DB commits strictly inside an acquired row lock (`invoice_locks[invoice_id]`).
