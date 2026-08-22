@@ -1,7 +1,7 @@
 # Implementation Plan - Submodule 1: Core Database, Models & Guardrail Engine
 
 ## Overview
-This submodule forms the foundational data layer and safety engine for **Resolve.ai**. It establishes the database schema for invoices, transaction ledgers (with idempotent constraints), chat sessions, and merchant guardrails, alongside a deterministic Python rule-validation engine and strict Finite State Machine (FSM) lifecycle rules.
+This submodule forms the foundational data layer and safety engine for **Resolve.ai**. It establishes the database schema for invoices, transaction ledgers (with idempotent constraints), composite chat sessions, and merchant guardrails, alongside a deterministic Python rule-validation engine enforcing upper/lower boundary bounds and strict Finite State Machine (FSM) lifecycle rules.
 
 ---
 
@@ -38,9 +38,10 @@ This submodule forms the foundational data layer and safety engine for **Resolve
   - `payment_method`: str (UPI, CARD, NETBANKING)
   - `created_at`: str (ISO Timestamp)
 
-- **`ChatSession` & `ChatMessage`**:
-  - `session_id`: str (WhatsApp Phone Number / UUID)
+- **`ChatSession` & `ChatMessage` (Composite Session Key)**:
+  - `session_id`: str (**Composite Key**: `f"{customer_phone}_{invoice_id}"` to prevent cross-talk between multiple active invoices for the same SME customer)
   - `invoice_id`: str
+  - `customer_phone`: str
   - `messages`: JSON list of message turns (`sender`, `text`, `timestamp`, `tool_call_meta`)
 
 ---
@@ -60,12 +61,14 @@ $$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIAL
 
 ---
 
-### 4. Deterministic Guardrail Engine (`backend/guardrails.py`)
+### 4. Deterministic Guardrail Engine & Upper/Lower Bound Checks (`backend/guardrails.py`)
 - **`GuardrailEngine`**:
   - `validate_proposal(invoice_id, proposed_amount_inr, extension_days)`:
     - Converts `proposed_amount_inr` to `proposed_amount_paise = int(round(proposed_amount_inr * 100))`.
     - Calculates `min_required_paise = int(round(remaining_amount_paise * (min_partial_payment_pct / 100.0)))`.
-    - Validates if `proposed_amount_paise >= min_required_paise`.
+    - **Enforces Ceiling & Floor Boundary**:
+      $$\text{min\_required\_paise} \le \text{proposed\_amount\_paise} \le \text{remaining\_amount\_paise}$$
+      Rejects any proposal where `proposed_amount_paise > remaining_amount_paise` (preventing over-billing or hallucinated inflated link amounts).
     - Validates if `extension_days <= max_extension_days`.
     - Returns `(is_valid: bool, reason: str, counter_offer_terms: dict)`.
 
@@ -76,6 +79,7 @@ $$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIAL
 ### Automated Verification
 - Run `python backend/test_submodule1.py`:
   1. Verify `inr_to_paise(20000.50)` equals `2000050` and DB stores integer `2000050`.
-  2. Verify FSM rejects invalid backward state transition (`PAID -> UNPAID`).
-  3. Test `GuardrailEngine` approves 40% initial payment offer and rejects 10% offer with structured counter-proposal.
-  4. Test `TransactionLedger` enforcing `UNIQUE(razorpay_payment_id)` constraint on duplicate inserts.
+  2. Verify upper-bound check: Reject proposal of ₹60,000 on ₹50,000 remaining balance.
+  3. Verify composite session key `f"{phone}_{invoice_id}"` isolates multiple invoices for same phone.
+  4. Verify FSM rejects invalid backward state transition (`PAID -> UNPAID`).
+  5. Test `TransactionLedger` enforcing `UNIQUE(razorpay_payment_id)` constraint on duplicate inserts.

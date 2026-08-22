@@ -2,7 +2,7 @@
 
 ## Overview
 Submodule 2 manages direct integration with financial and messaging API infrastructures:
-1. **Razorpay Payments**: Payment link generation, raw byte HMAC signature validation, idempotency enforcement via `TransactionLedger`, superseded link cancellation, and invoice balance auto-reconciliation.
+1. **Razorpay Payments**: Payment link generation (with explicit Unix timestamp expiry calculation), raw byte HMAC signature validation, idempotency enforcement via `TransactionLedger`, superseded link cancellation, and invoice balance auto-reconciliation.
 2. **Asynchronous Non-Blocking Processing**: Returns HTTP 200 OK under 100ms to eliminate Razorpay retry storms.
 3. **Meta WhatsApp Cloud API**: Real production-grade Webhook receiver (`GET` verification handshake & `POST` message ingestion) and outbound Meta Graph API client.
 
@@ -13,7 +13,7 @@ Submodule 2 manages direct integration with financial and messaging API infrastr
 ### 1. Razorpay API Client (`backend/razorpay_client.py`)
 - **`RazorpayClient`**:
   - `create_payment_link(amount_in_paise: int, description: str, customer_info: dict, expiry_timestamp: int) -> dict`:
-    - Sends POST to `/v1/payment_links` formatted in exact integer paise.
+    - Sends POST to `/v1/payment_links` formatted in exact integer paise and valid Unix timestamp `expiry_timestamp`.
   - `cancel_payment_link(payment_link_id: str)`:
     - Sends POST to `/v1/payment_links/{payment_link_id}/cancel` to deactivate superseded payment links when a new agreement is reached.
   - `verify_webhook_signature(raw_body_bytes: bytes, signature: str, secret: str) -> bool`:
@@ -58,6 +58,6 @@ Submodule 2 manages direct integration with financial and messaging API infrastr
 ### Automated Verification
 - Run `python backend/test_submodule2.py`:
   1. Test HMAC-SHA256 signature verification over raw bytes.
-  2. Test Razorpay payment link request payload formats `amount` in integer paise.
+  2. Test Razorpay payment link request payload formats `amount` in integer paise and valid Unix `expiry_timestamp`.
   3. Test duplicate webhook payload delivery: Assert background task executes idempotently and webhook endpoint returns HTTP 200 OK instantly.
   4. Test cancellation of superseded payment links when a new payment link record is created.
