@@ -38,19 +38,33 @@
    - **Untrusted LLM Safety Gateway**: Filters tool proposals through `GuardrailEngine`. If `PASS`, converts INR to integer paise, calculates 180-day capped UTC expiry timestamp, generates `reference_id`, and executes Razorpay API call. If `REJECT`, hard blocks API call and issues polite counter-offer.
    - **Inspectable Agent Trace**: Constructs visual audit payload (`thought`, `guardrail_check`, `currency_conversion`, `tool_executed`, `payment_link_url`).
 
+### Submodule 4: FastAPI Server Core & REST Endpoints (`backend/`)
+1. **Demo Seed Data (`backend/seed_data.py`)**:
+   - Seeds realistic Indian SME overdue invoices: Apex Logistics (₹50,000), Vanguard Web Studios (₹1,20,000), GreenLeaf Organics (₹35,000).
+2. **FastAPI Application Server (`backend/main.py`)**:
+   - **Explicit CORS Security**: `allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"]`.
+   - **Real-Time Server-Sent Events (SSE)** (`GET /api/events`): Broadcasts live updates (`payment_reconciled`, `guardrails_updated`, `chat_message_processed`) to UI clients.
+   - **REST Endpoints**:
+     - `GET /api/invoices`, `GET /api/invoices/{id}`
+     - `GET /api/guardrails`, `POST /api/guardrails`
+     - `POST /api/chat/message`, `POST /api/chat/reset`
+     - `POST /api/webhooks/razorpay` (raw byte HMAC verified, async background task)
+     - `GET /api/webhooks/whatsapp`, `POST /api/webhooks/whatsapp`
+     - `GET /api/analytics` (Total Overdue TPV, Recovered TPV, Recovery Rate %)
+
 ---
 
 ## Verification Results
 
-### Full Test Suite Execution (`backend/test_submodule*.py`)
+### Complete Backend Test Suite (`backend/test_submodule*.py`)
 ```bash
-python -m unittest backend/test_submodule1.py backend/test_submodule2.py backend/test_submodule3.py
+python -m unittest backend/test_submodule1.py backend/test_submodule2.py backend/test_submodule3.py backend/test_submodule4.py
 ```
 
 ```text
-.............
+...................
 ----------------------------------------------------------------------
-Ran 13 tests in 0.921s
+Ran 19 tests in 1.521s
 
 OK
 ```
@@ -71,9 +85,12 @@ c:\Users\Vansh\Desktop\TrustBridge\
 │   ├── webhooks.py         # Meta & Razorpay webhook engine + row locking
 │   ├── session_manager.py  # Composite session manager & per-session locks
 │   ├── agent.py            # Agentic negotiator, Guardrail gateway & trace log
+│   ├── seed_data.py        # Demo invoice seeding script
+│   ├── main.py             # FastAPI server, SSE stream & REST endpoints
 │   ├── test_submodule1.py  # Submodule 1 unit test suite
 │   ├── test_submodule2.py  # Submodule 2 unit test suite
-│   └── test_submodule3.py  # Submodule 3 unit test suite
+│   ├── test_submodule3.py  # Submodule 3 unit test suite
+│   └── test_submodule4.py  # Submodule 4 unit test suite
 ├── implementation_plans/   # Detailed implementation plans
 └── README.md
 ```
@@ -81,4 +98,4 @@ c:\Users\Vansh\Desktop\TrustBridge\
 ---
 
 ## Next Steps
-- **Submodule 4**: Implement FastAPI Server Core & REST Endpoints (`seed_data.py`, `main.py`).
+- **Submodule 5**: Implement Merchant Dashboard & WhatsApp Simulator UI (`frontend/`).

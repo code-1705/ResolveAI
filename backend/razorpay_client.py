@@ -42,6 +42,9 @@ class RazorpayClient:
             "accept_partial": False,
             "reference_id": safe_reference_id,
             "description": description,
+            "notes": {
+                "invoice_id": customer_info.get("invoice_id", "")
+            },
             "customer": {
                 "name": customer_info.get("name", "Valued Customer"),
                 "contact": customer_info.get("phone", "+919876543210"),

@@ -1,4 +1,5 @@
 from typing import Tuple, Dict, Any, Optional
+from backend.config import settings
 from backend.database import get_guardrails, get_invoice
 from backend.models import MerchantGuardrails, MasterInvoice
 
@@ -18,7 +19,11 @@ def paise_to_inr(amount_in_paise: int) -> float:
 
 class GuardrailEngine:
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path
+        self._db_path = db_path
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path or settings.DATABASE_PATH
 
     def validate_proposal(
         self,

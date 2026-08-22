@@ -29,7 +29,11 @@ def get_session_lock(session_id: str) -> asyncio.Lock:
 
 class SessionManager:
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or settings.DATABASE_PATH
+        self._db_path = db_path
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path or settings.DATABASE_PATH
 
     def get_or_create_session(self, session_id: str, invoice_id: str, customer_phone: str) -> ChatSession:
         """

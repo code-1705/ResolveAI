@@ -15,9 +15,13 @@ from backend.razorpay_client import razorpay_client
 
 class AgenticNegotiator:
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or settings.DATABASE_PATH
-        self.guardrail_engine = GuardrailEngine(db_path=self.db_path)
-        self.session_manager = SessionManager(db_path=self.db_path)
+        self._db_path = db_path
+        self.guardrail_engine = GuardrailEngine(db_path=db_path)
+        self.session_manager = SessionManager(db_path=db_path)
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path or settings.DATABASE_PATH
 
     async def process_customer_message(
         self,
@@ -129,7 +133,7 @@ class AgenticNegotiator:
                     link_res = razorpay_client.create_payment_link(
                         amount_in_paise=approved_amount_paise,
                         description=f"Partial payment plan for Invoice {invoice_id}",
-                        customer_info={"name": invoice.customer_name, "phone": customer_phone},
+                        customer_info={"name": invoice.customer_name, "phone": customer_phone, "invoice_id": invoice_id},
                         expiry_timestamp=expiry_timestamp,
                         reference_id=reference_id
                     )
