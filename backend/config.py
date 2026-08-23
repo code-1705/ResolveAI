@@ -57,6 +57,9 @@ class Settings(BaseModel):
     DATABASE_URL: Optional[str] = os.getenv("DATABASE_URL")
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
 
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://lcpyyilepfnlmbrwdzcv.supabase.co")
+    SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+
 settings = Settings()
 if settings.is_test_env:
     settings.DATABASE_URL = None

@@ -1,27 +1,27 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap');
 
 :root {
-  --bg-dark: #090D16;
-  --bg-card: rgba(17, 24, 39, 0.75);
-  --bg-card-hover: rgba(31, 41, 55, 0.85);
-  --border-color: rgba(255, 255, 255, 0.08);
-  --border-glow: rgba(59, 130, 246, 0.3);
+  /* Claude-inspired Beige Theme */
+  --bg-dark: #f2f0e9;       /* Main beige background */
+  --bg-card: #ffffff;       /* Pure white for cards */
+  --bg-card-hover: #faf9f6; /* Off-white hover */
+  --border-color: #e6e4dc;  /* Soft border */
   
-  --primary: #3B82F6;
-  --primary-hover: #2563EB;
-  --indigo: #6366F1;
-  --rzp-blue: #0066FF;
+  --primary: #da7756;       /* Claude auburn accent */
+  --primary-hover: #c46445;
+  --indigo: #5d574e;        /* Dark gray accent */
+  --rzp-blue: #0066FF;      /* Keep razorpay blue for payment button */
   
-  --text-main: #F9FAFB;
-  --text-muted: #9CA3AF;
-  --text-dim: #6B7280;
+  --text-main: #24221f;     /* Almost black */
+  --text-muted: #666560;    /* Muted gray */
+  --text-dim: #9c9a93;      /* Dimmer gray */
   
-  --success: #10B981;
-  --success-bg: rgba(16, 185, 129, 0.15);
-  --warning: #F59E0B;
-  --warning-bg: rgba(245, 158, 11, 0.15);
-  --danger: #EF4444;
-  --danger-bg: rgba(239, 68, 68, 0.15);
+  --success: #378b59;       /* Soft green */
+  --success-bg: #eaf3ed;
+  --warning: #d97706;       /* Soft orange */
+  --warning-bg: #fdf3e6;
+  --danger: #c44336;        /* Soft red */
+  --danger-bg: #faeaea;
 }
 
 * {
@@ -36,27 +36,25 @@ body {
   color: var(--text-main);
   min-height: 100vh;
   overflow-x: hidden;
-  background-image: 
-    radial-gradient(circle at 15% 15%, rgba(59, 130, 246, 0.12) 0%, transparent 40%),
-    radial-gradient(circle at 85% 85%, rgba(99, 102, 241, 0.12) 0%, transparent 40%);
 }
 
 h1, h2, h3, .brand-font {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Playfair Display', serif;
+  color: var(--text-main);
 }
 
-/* Glassmorphism utility */
+/* Minimalist Card utility (Replacing glass-panel) */
 .glass-panel {
   background: var(--bg-card);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border-color);
-  border-radius: 16px;
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .glass-panel:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: #dcdad0;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.05);
 }
 
 /* Custom Scrollbars */
@@ -65,27 +63,25 @@ h1, h2, h3, .brand-font {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: #dcdad0;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: #c5c3b9;
 }
 
-/* Gradient text */
+/* Gradient text removed, replaced with solid sophisticated color */
 .gradient-text {
-  background: linear-gradient(135deg, #60A5FA 0%, #A5B4FC 50%, #C084FC 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text-main);
 }
 
 /* Animations */
 @keyframes pulseGlow {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.8; }
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .live-indicator {
@@ -93,6 +89,5 @@ h1, h2, h3, .brand-font {
   height: 8px;
   background-color: var(--success);
   border-radius: 50%;
-  box-shadow: 0 0 10px var(--success);
   animation: pulseGlow 2s infinite ease-in-out;
 }

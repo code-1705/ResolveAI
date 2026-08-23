@@ -1,6 +1,6 @@
 import json
 import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 from backend.config import settings
 from backend.models import (
     MerchantGuardrails,
@@ -12,6 +12,10 @@ from backend.models import (
     InvoiceStatus,
     PaymentLinkStatus
 )
+
+
+def paise_to_inr(paise: int) -> float:
+    return round(paise / 100.0, 2)
 
 class FSMStateError(ValueError):
     """Raised when an illegal FSM invoice state transition is attempted."""
@@ -84,6 +88,12 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    try:
+        cursor.execute("ALTER TABLE master_invoices ADD COLUMN file_url TEXT;")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoices_phone ON master_invoices(customer_phone);")
 
@@ -123,6 +133,18 @@ def init_db():
         invoice_id TEXT NOT NULL,
         customer_phone TEXT NOT NULL,
         messages_json TEXT NOT NULL DEFAULT '[]'
+    );
+    """)
+
+    # 6. Invoice Private Document Blob Storage Table (PostgreSQL BYTEA)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoice_documents (
+        invoice_id TEXT PRIMARY KEY,
+        file_name TEXT NOT NULL,
+        file_mime_type TEXT NOT NULL,
+        file_bytes BYTEA NOT NULL,
+        customer_phone TEXT NOT NULL,
+        uploaded_at TEXT NOT NULL
     );
     """)
 
@@ -300,3 +322,189 @@ def record_transaction(
         conn.rollback()
         conn.close()
         return (False, True)  # Duplicate payment_id caught cleanly!
+
+from backend.storage import upload_to_supabase_storage
+
+def save_invoice_document(
+    invoice_id: str,
+    customer_phone: str,
+    file_name: str,
+    file_mime_type: str,
+    file_bytes: bytes
+) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    uploaded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    
+    # Attempt Supabase Cloud Storage bucket upload first
+    cdn_url = upload_to_supabase_storage(f"{invoice_id}_{file_name}", file_bytes, file_mime_type)
+
+    try:
+        cursor.execute("""
+        INSERT INTO invoice_documents (invoice_id, file_name, file_mime_type, file_bytes, customer_phone, uploaded_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT(invoice_id) DO UPDATE SET
+            file_name=excluded.file_name,
+            file_mime_type=excluded.file_mime_type,
+            file_bytes=excluded.file_bytes,
+            customer_phone=excluded.customer_phone,
+            uploaded_at=excluded.uploaded_at;
+        """, (invoice_id, cdn_url or file_name, file_mime_type, psycopg2.Binary(file_bytes), customer_phone, uploaded_at))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        print(f"[DB Document Save Error]: {e}")
+        return False
+
+def get_invoice_document(invoice_id: str, customer_phone: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("""
+    SELECT file_name, file_mime_type, file_bytes, customer_phone 
+    FROM invoice_documents 
+    WHERE invoice_id = %s;
+    """, (invoice_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    
+    clean_db_phone = row["customer_phone"].replace(" ", "").replace("-", "")
+    clean_req_phone = customer_phone.replace(" ", "").replace("-", "")
+    if clean_db_phone != clean_req_phone:
+        return {"error": "FORBIDDEN"}
+    
+    return {
+        "file_name": row["file_name"],
+        "file_mime_type": row["file_mime_type"],
+        "file_bytes": bytes(row["file_bytes"])
+    }
+
+
+def get_customer_all_invoices(customer_phone: str) -> List[Dict[str, Any]]:
+    """Returns all pending/unpaid invoices and document URLs belonging to a customer phone number."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    clean_phone = customer_phone.replace(" ", "").replace("-", "")
+    cursor.execute("SELECT * FROM master_invoices WHERE REPLACE(REPLACE(customer_phone, ' ', ''), '-', '') = %s ORDER BY due_date ASC;", (clean_phone,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        orig = r["original_amount_paise"]
+        paid = r["paid_amount_paise"]
+        rem = r["remaining_amount_paise"]
+        doc = get_invoice_document(r["invoice_id"], r["customer_phone"])
+        doc_url = None
+        has_doc = False
+        if doc and "error" not in doc:
+            has_doc = True
+            fn = doc.get("file_name", "")
+            if fn.startswith("http://") or fn.startswith("https://"):
+                doc_url = fn
+            else:
+                doc_url = f"/api/invoices/{r['invoice_id']}/document?customer_phone={r['customer_phone']}"
+
+        results.append({
+            "invoice_id": r["invoice_id"],
+            "customer_name": r["customer_name"],
+            "customer_phone": r["customer_phone"],
+            "original_amount_inr": paise_to_inr(orig),
+            "paid_amount_inr": paise_to_inr(paid),
+            "remaining_amount_inr": paise_to_inr(rem),
+            "due_date": r["due_date"],
+            "status": r["status"],
+            "has_document": has_doc,
+            "document_url": doc_url
+        })
+    return results
+
+
+def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
+    """Retrieves full account financial ledger, UNPAID invoice list, and past transaction history for a customer phone number."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    clean_phone = customer_phone.replace(" ", "").replace("-", "")
+
+    # ONLY select UNPAID / PARTIALLY_PAID / OVERDUE invoices (Exclude fully PAID bills)
+    cursor.execute(
+        "SELECT * FROM master_invoices WHERE REPLACE(REPLACE(customer_phone, ' ', ''), '-', '') = %s AND status != 'PAID' ORDER BY due_date ASC;",
+        (clean_phone,)
+    )
+    inv_rows = cursor.fetchall()
+
+    today_str = datetime.date.today().isoformat()
+    invoices_list = []
+    invoice_ids = []
+
+    total_billed_paise = 0
+    total_paid_paise = 0
+    total_remaining_paise = 0
+    pending_count = 0
+    overdue_count = 0
+
+    for r in inv_rows:
+        inv_id = r["invoice_id"]
+        invoice_ids.append(inv_id)
+        orig = r["original_amount_paise"]
+        paid = r["paid_amount_paise"]
+        rem = r["remaining_amount_paise"]
+
+        total_billed_paise += orig
+        total_paid_paise += paid
+        total_remaining_paise += rem
+
+        pending_count += 1
+        if r["due_date"] < today_str:
+            overdue_count += 1
+
+        f_url = r.get("file_url")
+        has_doc = True if (f_url and f_url.strip()) else False
+
+        invoices_list.append({
+            "invoice_id": inv_id,
+            "customer_name": r["customer_name"],
+            "customer_phone": r["customer_phone"],
+            "original_amount_inr": paise_to_inr(orig),
+            "paid_amount_inr": paise_to_inr(paid),
+            "remaining_amount_inr": paise_to_inr(rem),
+            "due_date": r["due_date"],
+            "status": r["status"],
+            "has_document": has_doc,
+            "document_url": f"/api/invoices/{inv_id}/document?customer_phone={r['customer_phone']}" if has_doc else None
+        })
+
+    transactions_list = []
+    if invoice_ids:
+        cursor.execute(
+            "SELECT * FROM transaction_ledger WHERE invoice_id = ANY(%s) ORDER BY id DESC;",
+            (invoice_ids,)
+        )
+        tx_rows = cursor.fetchall()
+        for t in tx_rows:
+            transactions_list.append({
+                "id": t["id"],
+                "invoice_id": t["invoice_id"],
+                "razorpay_payment_id": t["razorpay_payment_id"],
+                "amount_paid_inr": paise_to_inr(t["amount_paid_paise"]),
+                "payment_method": t["payment_method"],
+                "created_at": t["created_at"]
+            })
+
+    conn.close()
+
+    return {
+        "customer_phone": customer_phone,
+        "total_invoices_count": len(inv_rows),
+        "pending_invoices_count": pending_count,
+        "overdue_invoices_count": overdue_count,
+        "total_billed_inr": paise_to_inr(total_billed_paise),
+        "total_paid_to_date_inr": paise_to_inr(total_paid_paise),
+        "total_remaining_balance_inr": paise_to_inr(total_remaining_paise),
+        "invoices": invoices_list,
+        "transactions": transactions_list
+    }

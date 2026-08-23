@@ -1,3 +1,4 @@
+import time
 import base64
 import requests
 import asyncio
@@ -15,6 +16,8 @@ from backend.config import settings
 from backend.models import MasterInvoice, MerchantGuardrails, InvoiceStatus
 from backend.database import (
     init_db,
+    save_invoice_document,
+    get_invoice_document,
     get_guardrails,
     update_guardrails,
     get_invoice,
@@ -114,6 +117,9 @@ class CreateInvoiceRequest(BaseModel):
     customer_phone: str
     original_amount_inr: float
     due_date: str
+    file_bytes_b64: Optional[str] = None
+    file_name: Optional[str] = None
+    file_mime_type: Optional[str] = None
 
 class ChatResetRequest(BaseModel):
     session_id: str
@@ -161,6 +167,51 @@ async def sse_events_endpoint(request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # --- 2. Master Invoice Endpoints ---
+
+class EditInvoiceRequest(BaseModel):
+    customer_name: str
+    customer_phone: str
+    due_date: str
+    manual_payment_inr: Optional[float] = 0.0
+
+@app.put("/api/invoices/{invoice_id}")
+async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
+    """Allows merchants to edit invoice details or record manual off-platform payments (cash/UPI/cheque)."""
+    inv = get_invoice(invoice_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    inv.customer_name = req.customer_name
+    inv.customer_phone = req.customer_phone
+    inv.due_date = req.due_date
+
+    if req.manual_payment_inr and req.manual_payment_inr > 0:
+        payment_paise = inr_to_paise(req.manual_payment_inr)
+        
+        # Deduct from remaining balance
+        new_remaining = max(0, inv.remaining_amount_paise - payment_paise)
+        actual_paid = inv.remaining_amount_paise - new_remaining
+        inv.remaining_amount_paise = new_remaining
+        inv.paid_amount_paise = inv.paid_amount_paise + actual_paid
+
+        if inv.remaining_amount_paise == 0:
+            inv.status = InvoiceStatus.PAID
+        else:
+            inv.status = InvoiceStatus.PARTIALLY_PAID
+
+        from backend.database import record_transaction
+        record_transaction(
+            invoice_id=invoice_id,
+            razorpay_payment_id=f"manual_{int(time.time())}",
+            razorpay_payment_link_id=None,
+            amount_paid_paise=actual_paid,
+            payment_method="OFFLINE_MANUAL"
+        )
+
+    upsert_invoice(inv)
+    await broadcast_sse_event("payment_reconciled", {"invoice_id": invoice_id})
+    return {"success": True, "invoice": inv}
+
 
 @app.post("/api/invoices/extract")
 async def extract_invoice_from_file(file: UploadFile = File(...)):
@@ -219,20 +270,62 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
             }
         }
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=12.0)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = json.loads(text_resp.replace('```json', '').replace('```', '').strip())
-            return {
-                "success": True,
-                "data": parsed
-            }
-        else:
-            return {"success": False, "error": f"Gemini API error: {resp.status_code}"}
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=35.0)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = json.loads(text_resp.replace('```json', '').replace('```', '').strip())
+                return {
+                    "success": True,
+                    "data": parsed,
+                    "file_bytes_b64": base64_data,
+                    "file_name": file.filename,
+                    "file_mime_type": mime_type
+                }
+            else:
+                return {"success": False, "error": f"Gemini API error ({resp.status_code}). Please enter invoice details manually."}
+        except requests.exceptions.Timeout:
+            return {"success": False, "error": "AI extraction timed out due to network latency. Please enter details manually below."}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Could not parse document automatically. Please enter details manually below."}
 
+
+
+@app.get("/api/invoices/{invoice_id}/document")
+async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(..., alias="customer_phone")):
+    """Streams invoice PDF document from PostgreSQL or Supabase CDN with strict phone verification."""
+    doc = get_invoice_document(invoice_id, customer_phone)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Invoice document not found")
+    if "error" in doc and doc["error"] == "FORBIDDEN":
+        raise HTTPException(status_code=403, detail="Forbidden: Phone number mismatch")
+
+    file_name = doc.get("file_name", f"{invoice_id}_bill.pdf")
+    # If file_name is a CDN URL, fetch the file bytes or redirect to fresh signed URL
+    if file_name.startswith("http://") or file_name.startswith("https://"):
+        try:
+            cdn_res = requests.get(file_name, timeout=10.0)
+            if cdn_res.status_code == 200:
+                return Response(
+                    content=cdn_res.content,
+                    media_type=doc.get("file_mime_type", "application/pdf"),
+                    headers={
+                        "Content-Disposition": f'inline; filename="{invoice_id}_bill.pdf"'
+                    }
+                )
+        except Exception as e:
+            print(f"[CDN Fetch Fallback]: {e}")
+
+    return Response(
+        content=doc["file_bytes"],
+        media_type=doc.get("file_mime_type", "application/pdf"),
+        headers={
+            "Content-Disposition": f'inline; filename="{invoice_id}_bill.pdf"'
+        }
+    )
+
+from urllib.parse import quote_plus
 
 @app.get("/api/invoices")
 async def list_invoices():
@@ -248,6 +341,9 @@ async def list_invoices():
         orig = r["original_amount_paise"]
         paid = r["paid_amount_paise"]
         rem = r["remaining_amount_paise"]
+        f_url = r.get("file_url")
+        has_doc = True if (f_url and f_url.strip()) else False
+
         invoices.append({
             "invoice_id": r["invoice_id"],
             "customer_name": r["customer_name"],
@@ -259,7 +355,10 @@ async def list_invoices():
             "paid_amount_paise": paid,
             "remaining_amount_paise": rem,
             "due_date": r["due_date"],
-            "status": r["status"]
+            "status": r["status"],
+            "requires_human_attention": r["requires_human_attention"],
+            "has_document": has_doc,
+            "document_url": f_url
         })
     return invoices
 
@@ -282,7 +381,7 @@ async def get_invoice_detail(invoice_id: str):
 
 @app.post("/api/invoices")
 async def create_invoice(req: CreateInvoiceRequest):
-    """Creates a new master invoice with integer paise currency conversion."""
+    """Creates a new master invoice with integer paise currency conversion and stores private BYTEA blob if provided."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM master_invoices;")
@@ -305,6 +404,17 @@ async def create_invoice(req: CreateInvoiceRequest):
 
     upsert_invoice(inv)
 
+    if req.file_bytes_b64 and req.file_name and req.file_mime_type:
+        try:
+            raw_bytes = base64.b64decode(req.file_bytes_b64)
+            cdn_url = upload_to_supabase_storage(f"{invoice_id}_{req.file_name}", raw_bytes, req.file_mime_type)
+            if cdn_url:
+                inv.file_url = cdn_url
+                upsert_invoice(inv)
+                print(f"[Supabase Storage Success]: Attached CDN URL for {invoice_id} -> {cdn_url}")
+        except Exception as e:
+            print(f"[Supabase Upload Error]: {e}")
+
     res = {
         "invoice_id": inv.invoice_id,
         "customer_name": inv.customer_name,
@@ -313,7 +423,8 @@ async def create_invoice(req: CreateInvoiceRequest):
         "paid_amount_inr": 0.0,
         "remaining_amount_inr": inv.original_amount_inr,
         "due_date": inv.due_date,
-        "status": inv.status.value
+        "status": inv.status.value,
+        "has_document": True if (req.file_bytes_b64 and req.file_name) else False
     }
 
     await broadcast_sse_event("invoice_created", res)

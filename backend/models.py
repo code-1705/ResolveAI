@@ -35,6 +35,7 @@ class MasterInvoice:
     due_date: str = ""  # YYYY-MM-DD
     status: InvoiceStatus = InvoiceStatus.UNPAID
     requires_human_attention: bool = False
+    file_url: Optional[str] = None
 
     @property
     def original_amount_inr(self) -> float:

@@ -93,19 +93,31 @@ class SessionManager:
                 messages=messages
             )
 
-        # Create new session with initial outbound agent reminder message
-        inv = get_invoice(invoice_id)
-        greeting_text = ""
-        if inv:
+        # Create new customer session with initial outbound agent reminder message
+        profile = get_customer_financial_profile(customer_phone)
+        cust_name = profile["invoices"][0]["customer_name"] if profile["invoices"] else "valued customer"
+        pending_bills = [item for item in profile["invoices"] if item["status"] != "PAID"]
+        
+        if len(pending_bills) > 1:
+            bill_ids_str = ", ".join([b["invoice_id"] for b in pending_bills])
             greeting_text = (
-                f"Hi {inv.customer_name}! This is Resolve.ai reaching out on behalf of your merchant regarding Invoice {invoice_id} "
-                f"for ₹{paise_to_inr(inv.remaining_amount_paise):,.2f}. Your due date is {inv.due_date}. "
+                f"Hi {cust_name}! This is Resolve.ai reaching out on behalf of your merchant regarding your {len(pending_bills)} pending invoices "
+                f"({bill_ids_str}) with a total outstanding balance of ₹{profile['total_remaining_balance_inr']:,.2f}. "
+                "How would you like to resolve these today? Tap a quick proposal button below to start flexible terms."
+            )
+        elif pending_bills:
+            inv_item = pending_bills[0]
+            today_str = datetime.date.today().isoformat()
+            due_verb = "was" if inv_item["due_date"] < today_str else "is"
+            greeting_text = (
+                f"Hi {cust_name}! This is Resolve.ai reaching out on behalf of your merchant regarding Invoice {inv_item['invoice_id']} "
+                f"for ₹{inv_item['remaining_amount_inr']:,.2f}. Your due date {due_verb} {inv_item['due_date']}. "
                 "How would you like to resolve this bill today? Tap a quick proposal button below to start flexible terms."
             )
         else:
             greeting_text = (
-                f"Hi! This is Resolve.ai reaching out regarding Invoice {invoice_id}. "
-                "How would you like to resolve this bill today?"
+                f"Hi {cust_name}! This is Resolve.ai reaching out on behalf of your merchant. "
+                "How can I assist you with your account today?"
             )
 
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -118,7 +130,7 @@ class SessionManager:
 
         cursor.execute("""
         INSERT INTO chat_sessions (session_id, invoice_id, customer_phone, messages_json)
-        VALUES (?, ?, ?, ?);
+        VALUES (%s, %s, %s, %s);
         """, (session_id, invoice_id, customer_phone, json.dumps(initial_messages)))
         conn.commit()
         conn.close()
