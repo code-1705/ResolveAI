@@ -172,8 +172,8 @@ HUMAN CONVERSATION GUIDELINES:
     ) -> Dict[str, Any]:
         lock = get_session_lock(customer_phone)
         async with lock:
-            session = self.session_manager.get_or_create_session(customer_phone=customer_phone, invoice_id=invoice_id)
             self.session_manager.add_message(customer_phone, "user", customer_message)
+            session = self.session_manager.get_or_create_session(customer_phone=customer_phone, invoice_id=invoice_id)
 
             if not invoice_id:
                 profile = get_customer_financial_profile(customer_phone)
