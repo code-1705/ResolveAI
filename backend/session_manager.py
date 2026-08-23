@@ -119,23 +119,23 @@ class SessionManager:
         if len(pending_bills) > 1:
             bill_ids_str = ", ".join([b["invoice_id"] for b in pending_bills])
             greeting_text = (
-                f"Hi {cust_name}! This is Resolve.ai reaching out on behalf of your merchant regarding your {len(pending_bills)} pending invoices "
+                f"Hi {cust_name}! We are reaching out regarding your {len(pending_bills)} pending invoices "
                 f"({bill_ids_str}) with a total outstanding balance of ₹{profile['total_remaining_balance_inr']:,.2f}. "
-                "How would you like to resolve these today?"
+                "We have attached your official bill documents below for your review. How can we best assist you with resolving these today?"
             )
         elif pending_bills:
             inv_item = pending_bills[0]
             today_str = datetime.date.today().isoformat()
             due_verb = "was" if inv_item["due_date"] < today_str else "is"
             greeting_text = (
-                f"Hi {cust_name}! This is Resolve.ai reaching out on behalf of your merchant regarding Invoice {inv_item['invoice_id']} "
+                f"Hi {cust_name}! We are reaching out regarding Invoice {inv_item['invoice_id']} "
                 f"for ₹{inv_item['remaining_amount_inr']:,.2f}. Your due date {due_verb} {inv_item['due_date']}. "
-                "How would you like to resolve this bill today?"
+                "We have attached your official invoice bill below for your review. How can we best assist you with this today?"
             )
         else:
             greeting_text = (
-                f"Hi {cust_name}! This is Resolve.ai reaching out on behalf of your merchant. "
-                "How can I assist you with your account today?"
+                f"Hi {cust_name}! We are reaching out regarding your account. "
+                "How can we best assist you today?"
             )
 
         import urllib.parse

@@ -127,6 +127,52 @@ export default function App() {
   }, [chatMessages]);
 
 
+  // WhatsApp Rich Text Renderer (Converts *bold*, **bold**, `code`, and * bullets into clean styling)
+  const renderWhatsAppText = (text) => {
+    if (!text) return null;
+    const lines = text.split('\n');
+    return lines.map((line, lIdx) => {
+      let cleanLine = line;
+      if (cleanLine.trim().startsWith('* ') || cleanLine.trim().startsWith('- ')) {
+        cleanLine = cleanLine.replace(/^(\s*)[*-]\s+/, '$1• ');
+      }
+
+      const parts = [];
+      const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+      let match;
+      let lastIndex = 0;
+
+      while ((match = regex.exec(cleanLine)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(cleanLine.substring(lastIndex, match.index));
+        }
+        const token = match[0];
+        if (token.startsWith('**') && token.endsWith('**')) {
+          parts.push(<strong key={match.index}>{token.slice(2, -2)}</strong>);
+        } else if (token.startsWith('*') && token.endsWith('*')) {
+          parts.push(<strong key={match.index}>{token.slice(1, -1)}</strong>);
+        } else if (token.startsWith('`') && token.endsWith('`')) {
+          parts.push(
+            <span key={match.index} style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 5px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.9em' }}>
+              {token.slice(1, -1)}
+            </span>
+          );
+        }
+        lastIndex = regex.lastIndex;
+      }
+
+      if (lastIndex < cleanLine.length) {
+        parts.push(cleanLine.substring(lastIndex));
+      }
+
+      return (
+        <div key={lIdx} style={{ minHeight: cleanLine.trim() ? 'auto' : '10px' }}>
+          {parts.length > 0 ? parts : cleanLine}
+        </div>
+      );
+    });
+  };
+
   // Fetch initial data
   const fetchData = async () => {
     try {
@@ -524,7 +570,7 @@ export default function App() {
             onClick={() => setActiveTab('simulator')}
             style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', transition: 'all 0.2s', background: activeTab === 'simulator' ? 'var(--text-main)' : 'transparent', color: activeTab === 'simulator' ? '#FFF' : 'var(--text-muted)' }}
           >
-            💬 WhatsApp Simulator & AI Trace
+            💬 WhatsApp Simulator & Audit Trace
           </button>
         </div>
 
@@ -567,7 +613,7 @@ export default function App() {
               <div className="glass-panel" style={{ padding: '20px' }}>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Active Negotiations</p>
                 <h3 style={{ fontSize: '1.8rem', fontWeight: '700', color: 'var(--warning)' }}>{analytics.active_negotiations_count}</h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>Automated AI Sessions</p>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>Active Client Conversations</p>
               </div>
             </div>
 
@@ -873,7 +919,7 @@ export default function App() {
 
                         return (
                           <>
-                            <div>{cleanText || msg.text}</div>
+                            <div>{renderWhatsAppText(cleanText || msg.text)}</div>
 
                             {/* Render explicit media_documents attached by the Agent */}
                             {mediaDocs.length > 0 && (
@@ -1294,7 +1340,7 @@ export default function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <div>
                 <h2 style={{ fontSize: '1.4rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '4px' }}>Add New Invoice</h2>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Upload a bill or enter customer details for AI recovery</p>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Upload a bill or enter customer details to initiate outreach</p>
               </div>
               <button
                 onClick={() => setIsCreateModalOpen(false)}
@@ -1328,7 +1374,7 @@ export default function App() {
               />
               {isExtracting ? (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: 'var(--primary)', fontWeight: '600', fontSize: '0.9rem' }}>
-                  <span>✨</span> Gemini AI is reading your invoice bill...
+                  <span>✨</span> Reading and extracting your invoice bill...
                 </div>
               ) : extractError ? (
                 <div>
@@ -1348,7 +1394,7 @@ export default function App() {
                         {newBillData.file_name}
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--success)', fontWeight: '500' }}>
-                        ✓ Document Attached & Auto-Extracted with Gemini AI
+                        ✓ Document Attached & Auto-Extracted
                       </div>
                     </div>
                   </div>
@@ -1362,7 +1408,7 @@ export default function App() {
                     📁 Step 1: Upload Invoice File (Required)
                   </p>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Upload a PDF or Image invoice. Gemini AI will automatically extract Name, Amount, Due Date & Phone.
+                    Upload a PDF or Image invoice. We will automatically extract Name, Amount, Due Date & Phone.
                   </p>
                 </div>
               )}

@@ -173,7 +173,7 @@ def process_whatsapp_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
             # 0 active invoices found
             whatsapp_client.send_text_message(
                 customer_phone,
-                "Thank you for contacting Resolve.ai. No active overdue invoices were found for your number."
+                "Thank you for reaching out to us! We did not find any active overdue invoices for your number. Please let us know if you need any assistance."
             )
             return {
                 "status": "no_active_invoices",
