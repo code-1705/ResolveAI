@@ -232,7 +232,7 @@ HUMAN CONVERSATION GUIDELINES:
             system_instruction = self._build_system_instruction(invoice, guardrails)
             contents = self._build_gemini_contents(session.messages)
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
             payload = {
                 "systemInstruction": system_instruction,
                 "contents": contents,
@@ -355,8 +355,8 @@ HUMAN CONVERSATION GUIDELINES:
 
                                     if not resp_text:
                                         resp_text = (
-                                            f"Great news! Your payment proposal of ₹{approved_amount_inr:,.2f} has been approved. "
-                                            f"You can make your payment directly here: {payment_link_url}"
+                                            f"Here is your secure payment link for ₹{approved_amount_inr:,.2f}: {payment_link_url}\n"
+                                            "Once paid, your account balance will update instantly in real-time."
                                         )
 
                                 else:

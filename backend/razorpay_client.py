@@ -354,12 +354,21 @@ class RazorpayClient:
                 timeout=10
             )
             if res.status_code in [200, 201]:
-                return res.json()
+                data = res.json()
+                data["success"] = True
+                return data
             else:
-                print(f"[Razorpay Transfer Notice]: {res.text}")
+                err_desc = "Gateway Error"
+                try:
+                    err_desc = res.json().get("error", {}).get("description", res.text)
+                except Exception:
+                    err_desc = res.text
+                print(f"[Razorpay Transfer Rejected]: Status {res.status_code} - {err_desc}")
                 return {
-                    "id": transfer_id,
-                    "status": "processed",
+                    "success": False,
+                    "id": None,
+                    "status": "failed",
+                    "error": err_desc,
                     "payment_id": payment_id,
                     "account": account_id,
                     "amount": amount_paise
@@ -367,8 +376,10 @@ class RazorpayClient:
         except Exception as e:
             print(f"[Razorpay Transfer Exception]: {e}")
             return {
-                "id": transfer_id,
-                "status": "processed",
+                "success": False,
+                "id": None,
+                "status": "failed",
+                "error": str(e),
                 "payment_id": payment_id,
                 "account": account_id,
                 "amount": amount_paise

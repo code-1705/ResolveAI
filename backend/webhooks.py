@@ -361,6 +361,8 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
             notes={"invoice_id": invoice_id, "merchant_id": m_id}
         )
         transfer_id = trf_res.get("id")
+        is_transfer_successful = trf_res.get("success", True) if not razorpay_client.is_mock else True
+        outflow_status = "TRANSFERRED" if is_transfer_successful and transfer_id else "FAILED"
 
         # 5. Record Double-Entry Ledger (Inflow Customer Payment & Outflow 99% Merchant Wire)
         log_financial_transaction(
@@ -391,7 +393,7 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
             bank_beneficiary_name=getattr(merchant, 'bank_beneficiary_name', None),
             bank_account_masked=f"••••••••{(getattr(merchant, 'bank_account_number', '') or '')[-4:]}",
             bank_ifsc=getattr(merchant, 'bank_ifsc', None),
-            status="TRANSFERRED"
+            status=outflow_status
         )
 
         if razorpay_payment_link_id:
@@ -407,5 +409,35 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
                 razorpay_client.cancel_payment_link(razorpay_payment_link_id)
             except Exception:
                 pass
+
+        # 6. Auto-Inject Confirmation Receipt into WhatsApp Chat Session
+        if invoice.customer_phone:
+            if new_remaining_paise == 0:
+                receipt_msg = (
+                    f"✅ *Payment Confirmed!* Thank you, {invoice.customer_name}.\n\n"
+                    f"We have received your payment of *₹{amount_paise/100:,.2f}* for invoice `{invoice_id}` via Razorpay (Ref: `{razorpay_payment_id}`).\n\n"
+                    "🎉 *Your invoice is now fully settled!*"
+                )
+            else:
+                receipt_msg = (
+                    f"✅ *Partial Payment Received!* Thank you, {invoice.customer_name}.\n\n"
+                    f"We have credited *₹{amount_paise/100:,.2f}* towards invoice `{invoice_id}` via Razorpay.\n"
+                    f"Remaining balance due: *₹{new_remaining_paise/100:,.2f}*."
+                )
+            
+            session_manager.add_message(invoice.customer_phone, "agent", receipt_msg)
+            
+            # Broadcast real-time SSE event with chat update
+            try:
+                from backend.main import broadcast_sse_event
+                await broadcast_sse_event("payment_reconciled", {
+                    "invoice_id": invoice_id,
+                    "customer_phone": invoice.customer_phone,
+                    "amount_paid_inr": amount_paise / 100.0,
+                    "remaining_inr": new_remaining_paise / 100.0,
+                    "receipt_message": receipt_msg
+                })
+            except Exception as sse_err:
+                print(f"[SSE Broadcast Notice]: {sse_err}")
 
         return {"status": "success", "invoice_id": invoice_id, "new_status": invoice.status.value}

@@ -357,8 +357,9 @@ export default function App() {
           setSseConnected(true);
         } else if (payload.type === 'payment_reconciled') {
           fetchData();
-          if (selectedInvoice) {
-            fetchChatHistory(selectedInvoice);
+          const targetPhone = payload.data?.customer_phone || (activeCustomer ? activeCustomer.customer_phone : selectedPhone);
+          if (targetPhone) {
+            fetchChatHistory(targetPhone);
           }
         } else if (payload.type === 'guardrails_updated') {
           setGuardrails(payload.data);
