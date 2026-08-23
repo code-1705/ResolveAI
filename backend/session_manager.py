@@ -26,7 +26,7 @@ class SessionLock:
         self.session_id = session_id
         self.redis_lock = None
         self.memory_lock = None
-        
+
         if redis_client:
             self.redis_lock = redis_client.lock(f"lock:session:{session_id}", timeout=30)
         else:
@@ -62,21 +62,17 @@ def get_session_lock(session_id: str) -> SessionLock:
     return SessionLock(session_id)
 
 class SessionManager:
-    def __init__(self, db_path: Optional[str] = None):
-        self._db_path = db_path
-
-    @property
-    def db_path(self) -> str:
-        return self._db_path or settings.DATABASE_PATH
+    def __init__(self):
+        pass
 
     def get_or_create_session(self, session_id: str, invoice_id: str, customer_phone: str) -> ChatSession:
         """
         Loads an existing ChatSession from PostgreSQL or creates a new one.
         Composite session key: f"{customer_phone}_{invoice_id}"
         """
-        conn = get_connection(self.db_path)
+        conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM chat_sessions WHERE session_id = ?;", (session_id,))
+        cursor.execute("SELECT * FROM chat_sessions WHERE session_id = %s;", (session_id,))
         row = cursor.fetchone()
 
         if row:
@@ -98,7 +94,7 @@ class SessionManager:
             )
 
         # Create new session with initial outbound agent reminder message
-        inv = get_invoice(invoice_id, self.db_path)
+        inv = get_invoice(invoice_id)
         greeting_text = ""
         if inv:
             greeting_text = (
@@ -151,9 +147,9 @@ class SessionManager:
         """
         Appends a user or agent message turn to the PostgreSQL chat session.
         """
-        conn = get_connection(self.db_path)
+        conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM chat_sessions WHERE session_id = ?;", (session_id,))
+        cursor.execute("SELECT * FROM chat_sessions WHERE session_id = %s;", (session_id,))
         row = cursor.fetchone()
 
         if not row:
@@ -162,14 +158,14 @@ class SessionManager:
 
         raw_messages = json.loads(row["messages_json"])
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        
+
         new_msg = ChatMessage(
             sender=sender,
             text=text,
             timestamp=timestamp,
             metadata=metadata or {}
         )
-        
+
         raw_messages.append({
             "sender": new_msg.sender,
             "text": new_msg.text,
@@ -179,8 +175,8 @@ class SessionManager:
 
         cursor.execute("""
         UPDATE chat_sessions
-        SET messages_json = ?
-        WHERE session_id = ?;
+        SET messages_json = %s
+        WHERE session_id = %s;
         """, (json.dumps(raw_messages), session_id))
         conn.commit()
         conn.close()
@@ -191,9 +187,9 @@ class SessionManager:
         """
         Returns the last `limit` message turns for LLM prompt context construction.
         """
-        conn = get_connection(self.db_path)
+        conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT messages_json FROM chat_sessions WHERE session_id = ?;", (session_id,))
+        cursor.execute("SELECT messages_json FROM chat_sessions WHERE session_id = %s;", (session_id,))
         row = cursor.fetchone()
         conn.close()
 

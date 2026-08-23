@@ -20,7 +20,7 @@ class RazorpayClient:
         self.key_secret = key_secret or settings.RAZORPAY_KEY_SECRET
         self.webhook_secret = webhook_secret or settings.RAZORPAY_WEBHOOK_SECRET
         self.base_url = "https://api.razorpay.com/v1"
-        
+
         is_test_env = bool(os.getenv("PYTEST_CURRENT_TEST")) or "unittest" in os.environ.get("_", "") or "unittest" in sys.argv[0] or any("unittest" in arg for arg in sys.argv)
         self.is_mock = is_test_env or self.key_id.startswith("rzp_test_mock") or not self.key_id
 
@@ -107,11 +107,11 @@ class RazorpayClient:
         if response.status_code == 429:
             print("[Razorpay Production Error] HTTP 429 Too Many Requests. Retrying...")
             response.raise_for_status()  # Trigger tenacity retry
-        
+
         if not response.ok:
             print(f"[Razorpay Production Error] Status: {response.status_code}, Body: {response.text}")
             response.raise_for_status()
-            
+
         return response.json()
 
     def cancel_payment_link(self, payment_link_id: str) -> Dict[str, Any]:
@@ -137,7 +137,7 @@ class RazorpayClient:
         """Fetches recent payments for active reconciliation fallback."""
         if self.is_mock:
             return []
-        
+
         response = requests.get(
             f"{self.base_url}/payments",
             auth=(self.key_id, self.key_secret),

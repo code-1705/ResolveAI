@@ -1,10 +1,12 @@
+import base64
+import requests
 import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, BackgroundTasks, HTTPException, Query, status
+from fastapi import FastAPI, Request, Response, BackgroundTasks, HTTPException, Query, File, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -59,7 +61,7 @@ async def active_reconciliation_job():
                         }
                     }
                 }
-                await reconcile_payment_event(mock_webhook, settings.DATABASE_PATH)
+                await reconcile_payment_event(mock_webhook)
         print("[Cron] Active Reconciliation Complete.")
     except Exception as e:
         print(f"[Cron] Active Reconciliation Failed: {e}")
@@ -67,7 +69,7 @@ async def active_reconciliation_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize tables
-    init_db(settings.DATABASE_PATH)
+    init_db()
     scheduler.start()
     yield
     # Shutdown
@@ -159,10 +161,83 @@ async def sse_events_endpoint(request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # --- 2. Master Invoice Endpoints ---
+
+@app.post("/api/invoices/extract")
+async def extract_invoice_from_file(file: UploadFile = File(...)):
+    """Accepts an invoice PDF or image file and extracts structured invoice fields via Gemini 2.5 Flash."""
+    try:
+        contents = await file.read()
+        mime_type = file.content_type or "image/jpeg"
+        if "pdf" in file.filename.lower() or "pdf" in mime_type.lower():
+            mime_type = "application/pdf"
+        elif "png" in mime_type.lower():
+            mime_type = "image/png"
+        elif "webp" in mime_type.lower():
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+
+        base64_data = base64.b64encode(contents).decode("utf-8")
+
+        prompt = """
+        You are an intelligent Document OCR Parser for Indian SME Invoices.
+        Extract the following fields from the provided invoice file:
+        - customer_name: Name of the SME or customer billed. (string)
+        - customer_phone: Phone number or WhatsApp number if listed (formatted like +91XXXXXXXXXX or string), or null if not found.
+        - original_amount_inr: Total invoice bill amount in INR as a numeric float.
+        - due_date: Invoice payment due date in YYYY-MM-DD format (string), or current date if not found.
+
+        Return ONLY a valid JSON object matching this schema:
+        {
+          "customer_name": "string",
+          "customer_phone": "string or null",
+          "original_amount_inr": number,
+          "due_date": "YYYY-MM-DD"
+        }
+        """
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": base64_data
+                            }
+                        },
+                        {
+                            "text": prompt
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "response_mime_type": "application/json"
+            }
+        }
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=12.0)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = json.loads(text_resp.replace('```json', '').replace('```', '').strip())
+            return {
+                "success": True,
+                "data": parsed
+            }
+        else:
+            return {"success": False, "error": f"Gemini API error: {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/invoices")
 async def list_invoices():
     """Returns list of all master invoices with balance progress and status."""
-    conn = get_connection(settings.DATABASE_PATH)
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM master_invoices ORDER BY due_date ASC;")
     rows = cursor.fetchall()
@@ -191,7 +266,7 @@ async def list_invoices():
 @app.get("/api/invoices/{invoice_id}")
 async def get_invoice_detail(invoice_id: str):
     """Returns detailed information for a single invoice."""
-    inv = get_invoice(invoice_id, settings.DATABASE_PATH)
+    inv = get_invoice(invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found.")
     return {
@@ -208,7 +283,7 @@ async def get_invoice_detail(invoice_id: str):
 @app.post("/api/invoices")
 async def create_invoice(req: CreateInvoiceRequest):
     """Creates a new master invoice with integer paise currency conversion."""
-    conn = get_connection(settings.DATABASE_PATH)
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM master_invoices;")
     count = cursor.fetchone()[0]
@@ -228,7 +303,7 @@ async def create_invoice(req: CreateInvoiceRequest):
         status=InvoiceStatus.UNPAID
     )
 
-    upsert_invoice(inv, settings.DATABASE_PATH)
+    upsert_invoice(inv)
 
     res = {
         "invoice_id": inv.invoice_id,
@@ -248,7 +323,7 @@ async def create_invoice(req: CreateInvoiceRequest):
 @app.get("/api/guardrails")
 async def get_merchant_guardrails():
     """Returns current active merchant negotiation guardrails."""
-    g = get_guardrails(settings.DATABASE_PATH)
+    g = get_guardrails()
     return {
         "id": g.id,
         "min_partial_payment_pct": g.min_partial_payment_pct,
@@ -269,7 +344,7 @@ async def save_merchant_guardrails(req: GuardrailsUpdateRequest):
         auto_discount_waiver_pct=req.auto_discount_waiver_pct,
         tone=req.tone
     )
-    updated = update_guardrails(g, settings.DATABASE_PATH)
+    updated = update_guardrails(g)
     res = {
         "min_partial_payment_pct": updated.min_partial_payment_pct,
         "max_extension_days": updated.max_extension_days,
@@ -313,7 +388,7 @@ async def send_chat_message(req: ChatMessageRequest):
     Invokes AgenticNegotiator, returns response text & visual audit trace, and broadcasts SSE event.
     """
     session_id = req.session_id or f"{req.customer_phone}_{req.invoice_id}"
-    
+
     agent_res = await agentic_negotiator.process_customer_message(
         session_id=session_id,
         invoice_id=req.invoice_id,
@@ -327,16 +402,16 @@ async def send_chat_message(req: ChatMessageRequest):
         "response_text": agent_res["response_text"],
         "trace": agent_res["trace"]
     }
-    
+
     await broadcast_sse_event("chat_message_processed", out_data)
     return out_data
 
 @app.post("/api/chat/reset")
 async def reset_chat_session(req: ChatResetRequest):
     """Resets chat history for a session."""
-    conn = get_connection(settings.DATABASE_PATH)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE chat_sessions SET messages_json = '[]' WHERE session_id = ?;", (req.session_id,))
+    cursor.execute("UPDATE chat_sessions SET messages_json = '[]' WHERE session_id = %s;", (req.session_id,))
     conn.commit()
     conn.close()
     return {"status": "reset", "session_id": req.session_id}
@@ -392,7 +467,7 @@ async def verify_checkout_payment(req: VerifyPaymentRequest):
 
     # Payment Verified! Reconcile invoice balance if invoice_id is present
     if req.invoice_id:
-        invoice = get_invoice(req.invoice_id, settings.DATABASE_PATH)
+        invoice = get_invoice(req.invoice_id)
         if invoice and invoice.remaining_amount_paise > 0:
             mock_webhook_payload = {
                 "event": "payment.captured",
@@ -408,7 +483,7 @@ async def verify_checkout_payment(req: VerifyPaymentRequest):
                     }
                 }
             }
-            reconcile_res = await reconcile_payment_event(mock_webhook_payload, db_path=settings.DATABASE_PATH)
+            reconcile_res = await reconcile_payment_event(mock_webhook_payload, )
             if reconcile_res.get("status") == "reconciled":
                 await broadcast_sse_event("payment_reconciled", reconcile_res)
 
@@ -423,7 +498,7 @@ async def verify_checkout_payment(req: VerifyPaymentRequest):
 
 async def background_razorpay_reconcile(payload: Dict[str, Any]):
     """Background task processing Razorpay payment reconciliation."""
-    res = await reconcile_payment_event(payload, db_path=settings.DATABASE_PATH)
+    res = await reconcile_payment_event(payload)
     if res.get("status") == "reconciled":
         await broadcast_sse_event("payment_reconciled", res)
 
@@ -479,8 +554,8 @@ async def background_process_whatsapp_message(session_id: str, invoice_id: str, 
 async def meta_whatsapp_webhook_receiver(request: Request, background_tasks: BackgroundTasks):
     """Meta WhatsApp Cloud API POST incoming message webhook receiver."""
     payload = await request.json()
-    res = process_whatsapp_webhook(payload, db_path=settings.DATABASE_PATH)
-    
+    res = process_whatsapp_webhook(payload)
+
     if res.get("status") == "routed":
         # Safely enqueue LLM negotiator as a FastAPI BackgroundTask
         session_id = res["session_id"]
@@ -502,7 +577,7 @@ async def meta_whatsapp_webhook_receiver(request: Request, background_tasks: Bac
 @app.get("/api/analytics")
 async def get_analytics_overview():
     """Returns key metrics: Total Overdue TPV, Recovered TPV, Recovery Rate %, Active Negotiations."""
-    conn = get_connection(settings.DATABASE_PATH)
+    conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT SUM(original_amount_paise), SUM(paid_amount_paise), SUM(remaining_amount_paise) FROM master_invoices;")

@@ -6,25 +6,101 @@ import json
 import requests
 from typing import Dict, Any, Tuple, Optional, List
 from backend.config import settings
-from backend.models import MasterInvoice, InvoiceStatus, PaymentLinkStatus
+from backend.models import MasterInvoice, InvoiceStatus, PaymentLinkStatus, ChatMessage
 from backend.database import (
     get_invoice,
     get_guardrails,
+    upsert_invoice,
     get_connection
 )
 from backend.guardrails import GuardrailEngine, inr_to_paise, paise_to_inr
 from backend.session_manager import SessionManager, session_manager, get_session_lock
 from backend.razorpay_client import razorpay_client
 
-class AgenticNegotiator:
-    def __init__(self, db_path: Optional[str] = None):
-        self._db_path = db_path
-        self.guardrail_engine = GuardrailEngine(db_path=db_path)
-        self.session_manager = SessionManager(db_path=db_path)
+TOOLS_DECLARATION = [
+    {
+        "functionDeclarations": [
+            {
+                "name": "propose_settlement_payment",
+                "description": "Call this tool whenever the customer proposes a partial payment amount/percentage or requests a due date extension. Evaluates merchant guardrails and generates a Razorpay payment link if approved.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "proposed_amount_inr": {
+                            "type": "NUMBER",
+                            "description": "The proposed initial payment amount in INR (numeric float)."
+                        },
+                        "extension_days": {
+                            "type": "INTEGER",
+                            "description": "The requested due date extension in days (numeric int, e.g. 7, 14)."
+                        }
+                    },
+                    "required": ["proposed_amount_inr", "extension_days"]
+                }
+            },
+            {
+                "name": "escalate_to_human",
+                "description": "Call this tool when the customer is extremely hostile, threatens legal action, disputes the invoice validity entirely, or demands human management.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "reason": {
+                            "type": "STRING",
+                            "description": "Reason for human escalation."
+                        }
+                    },
+                    "required": ["reason"]
+                }
+            }
+        ]
+    }
+]
 
-    @property
-    def db_path(self) -> str:
-        return self._db_path or settings.DATABASE_PATH
+class AgenticNegotiator:
+    def __init__(self):
+        self.guardrail_engine = GuardrailEngine()
+        self.session_manager = SessionManager()
+
+    def _build_system_instruction(self, invoice: MasterInvoice, guardrails: Any) -> Dict[str, Any]:
+        min_req_inr = round(invoice.remaining_amount_inr * (guardrails.min_partial_payment_pct / 100.0), 2)
+        return {
+            "parts": [{
+                "text": f"""
+You are Resolve.ai, an empathetic, highly professional automated debt collection assistant for Indian SMEs.
+You are conversing via WhatsApp with customer '{invoice.customer_name}'.
+
+INVOICE SUMMARY:
+- Invoice ID: {invoice.invoice_id}
+- Customer Name: {invoice.customer_name}
+- Original Bill Amount: ₹{invoice.original_amount_inr:,.2f}
+- Remaining Balance: ₹{invoice.remaining_amount_inr:,.2f}
+- Due Date: {invoice.due_date}
+
+MERCHANT POLICY GUARDRAILS:
+- Minimum Initial Payment: {guardrails.min_partial_payment_pct}% of remaining balance (Minimum ₹{min_req_inr:,.2f})
+- Maximum Allowed Extension: {guardrails.max_extension_days} days
+- Persona Tone: {guardrails.tone}
+
+CRITICAL INSTRUCTIONS:
+1. Speak naturally, warmly, and concisely (2 to 4 sentences). Stay strictly in character as a helpful Indian SME financial advisor.
+2. NEVER issue or promise a payment link or specific agreement directly in text without calling the 'propose_settlement_payment' tool.
+3. If the customer makes ANY payment proposal (e.g. "I can pay 40%", "I will pay 20k next week", "give me 10 days", "can I pay half now?"), you MUST call the 'propose_settlement_payment' tool with the proposed amount in INR and requested extension days.
+4. If the customer expresses inability to pay or asks what options exist, warmly present the merchant's available options (split payments starting at {guardrails.min_partial_payment_pct}% or extensions up to {guardrails.max_extension_days} days).
+5. If the customer claims they ALREADY paid or sent money via UPI, remind them that payments are verified automatically via Razorpay webhooks and state their current verified balance.
+6. If the customer is extremely hostile or disputes the bill entirely, call the 'escalate_to_human' tool.
+"""
+            }]
+        }
+
+    def _build_gemini_contents(self, messages: List[ChatMessage]) -> List[Dict[str, Any]]:
+        contents = []
+        for msg in messages:
+            role = "user" if msg.sender == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg.text}]
+            })
+        return contents
 
     async def process_customer_message(
         self,
@@ -34,30 +110,16 @@ class AgenticNegotiator:
         customer_message: str
     ) -> Dict[str, Any]:
         """
-        Main Agentic Negotiation Entrypoint.
-        Enforces 5 Production Safeguards:
-        1. Atomic Per-Session Concurrency Lock (async with lock:).
-        2. Anti-Hallucination Fund Confirmation Directives.
-        3. Untrusted LLM Gateway (GuardrailEngine hard floor & ceiling check).
-        4. Reference ID Payload Idempotency (ref_{session_id[:20]}_t{turn}).
-        5. Detailed Inspectable Agent Trace Payload.
+        Main Agentic Negotiation Entrypoint using Native Gemini 2.5 Flash Multi-Turn Chat & Function Calling.
         """
-        # 1. Acquire Per-Session Lock
         lock = get_session_lock(session_id)
         async with lock:
-            # Load or create chat session
+            # 1. Load chat session & invoice
             session = self.session_manager.get_or_create_session(session_id, invoice_id, customer_phone)
-            
-            # Record customer message turn
             self.session_manager.add_message(session_id, "user", customer_message)
-            
-            # Load recent 5-turn chat history
-            history = self.session_manager.get_recent_history(session_id, limit=5)
-            turn_count = len(session.messages)
 
-            # Load active invoice & guardrails
-            invoice = get_invoice(invoice_id, self.db_path)
-            guardrails = get_guardrails(self.db_path)
+            invoice = get_invoice(invoice_id)
+            guardrails = get_guardrails()
 
             if not invoice:
                 err_text = f"Invoice '{invoice_id}' not found."
@@ -98,134 +160,182 @@ class AgenticNegotiator:
                     }
                 }
 
-            # 3. Parse Proposal Parameters (Amount, Extension Days & Intent)
-            proposed_amount_inr, extension_days, intent = self._parse_proposal_intent(customer_message, invoice, guardrails)
+            # 3. Native Gemini 2.5 Flash Multi-Turn Chat Payload
+            system_instruction = self._build_system_instruction(invoice, guardrails)
+            contents = self._build_gemini_contents(session.messages)
 
-            if intent == "escalate":
-                # Handle Human Handoff Escapement
-                invoice.requires_human_attention = True
-                from backend.database import upsert_invoice
-                upsert_invoice(invoice, self.db_path)
-                
-                resp_text = (
-                    "I understand your frustration. I have escalated your case to a human agent "
-                    "who will review this and get back to you shortly. Please wait for our team to contact you."
-                )
-                self.session_manager.add_message(session_id, "agent", resp_text)
-                return {
-                    "response_text": resp_text,
-                    "trace": {
-                        "thought": "Customer expressed extreme dissatisfaction. Triggered human handoff.",
-                        "guardrail_check": {"status": "ESCALATED", "rule": "human_handoff"},
-                        "verified_invoice_status": invoice.status.value
-                    }
-                }
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            payload = {
+                "systemInstruction": system_instruction,
+                "contents": contents,
+                "tools": TOOLS_DECLARATION
+            }
 
-            # 4. Evaluate Proposal against GuardrailEngine Safety Gateway
-            guardrail_passed, reason, guardrail_meta = self.guardrail_engine.validate_proposal(
-                invoice_id=invoice_id,
-                proposed_amount_inr=proposed_amount_inr,
-                extension_days=extension_days
-            )
-
+            resp_text = None
             tool_executed = None
             payment_link_url = None
-            payment_link_id = None
-            currency_conversion_meta = {}
+            guardrail_passed = True
+            guardrail_check_status = "PASS"
+            thought_summary = "Processed natural conversational turn with Gemini 2.5 Flash."
 
-            if guardrail_passed:
-                # 5. Guardrail Approved -> Generate Razorpay Payment Link!
-                approved_amount_inr = guardrail_meta["approved_amount_inr"]
-                approved_amount_paise = guardrail_meta["approved_amount_paise"]
-                approved_extension = guardrail_meta["approved_extension_days"]
+            try:
+                resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=8.0)
+                if resp.status_code == 200:
+                    res_data = resp.json()
+                    candidate = res_data["candidates"][0]["content"]
+                    parts = candidate.get("parts", [])
 
-                currency_conversion_meta = {
-                    "approved_amount_inr": approved_amount_inr,
-                    "approved_amount_paise": approved_amount_paise
-                }
+                    # Check for Function Calls (Tools)
+                    function_call = None
+                    for part in parts:
+                        if "functionCall" in part:
+                            function_call = part["functionCall"]
+                            break
 
-                # Compute Unix Expiry Timestamp (Capped at 180 Days)
-                effective_days = min(approved_extension, 180)
-                expiry_timestamp = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=effective_days)).replace(hour=23, minute=59, second=59).timestamp())
+                    if function_call:
+                        fn_name = function_call["name"]
+                        fn_args = function_call.get("args", {})
 
-                # Generate unique reference_id payload idempotency key (max 40 chars)
-                ts_suffix = str(int(time.time()))[-6:]
-                reference_id = f"ref_{invoice_id[:15]}_t{turn_count}_{ts_suffix}"[:40]
+                        if fn_name == "escalate_to_human":
+                            invoice.requires_human_attention = True
+                            upsert_invoice(invoice)
+                            resp_text = (
+                                "I understand your frustration. I have escalated your case to a human agent "
+                                "who will review this and get back to you shortly."
+                            )
+                            guardrail_check_status = "ESCALATED"
+                            thought_summary = f"Customer escalated: {fn_args.get('reason', 'hostile dialogue')}"
 
-                try:
-                    # De-duplicate: Cancel existing active payment links
-                    conn = get_connection(self.db_path)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT razorpay_payment_link_id FROM payment_links WHERE invoice_id = ? AND status = 'ACTIVE';", (invoice_id,))
-                    active_links = cursor.fetchall()
-                    conn.close()
+                        elif fn_name == "propose_settlement_payment":
+                            proposed_amount_inr = float(fn_args.get("proposed_amount_inr", 0))
+                            extension_days = int(fn_args.get("extension_days", guardrails.max_extension_days))
 
-                    for link in active_links:
-                        old_link_id = link["razorpay_payment_link_id"]
-                        try:
-                            razorpay_client.cancel_payment_link(old_link_id)
-                            # Update DB status to CANCELLED
-                            conn = get_connection(self.db_path)
-                            c = conn.cursor()
-                            c.execute("UPDATE payment_links SET status = 'CANCELLED' WHERE razorpay_payment_link_id = ?;", (old_link_id,))
-                            conn.commit()
-                            conn.close()
-                        except Exception as e:
-                            print(f"Warning: Failed to cancel old payment link {old_link_id}: {e}")
+                            # Run Python Guardrail Gateway
+                            guardrail_passed, reason, guardrail_meta = self.guardrail_engine.validate_proposal(
+                                invoice_id=invoice_id,
+                                proposed_amount_inr=proposed_amount_inr,
+                                extension_days=extension_days
+                            )
 
-                    # Call Razorpay Payment Links API
-                    link_res = razorpay_client.create_payment_link(
-                        amount_in_paise=approved_amount_paise,
-                        description=f"Partial payment plan for Invoice {invoice_id}",
-                        customer_info={"name": invoice.customer_name, "phone": customer_phone, "invoice_id": invoice_id},
-                        expiry_timestamp=expiry_timestamp,
-                        reference_id=reference_id
-                    )
+                            if guardrail_passed:
+                                approved_amount_inr = guardrail_meta["approved_amount_inr"]
+                                approved_extension = guardrail_meta["approved_extension_days"]
 
-                    tool_executed = "create_razorpay_payment_link"
-                    payment_link_url = link_res.get("short_url")
-                    payment_link_id = link_res.get("id")
+                                # Generate Razorpay Payment Link
+                                ref_id = f"ref_{session_id[:16]}_t{len(session.messages)}"
+                                effective_days = min(approved_extension, 180)
+                                expiry_timestamp = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=effective_days)).replace(hour=23, minute=59, second=59).timestamp())
 
-                    # Persist Payment Link Record in DB
-                    self._record_payment_link(invoice_id, payment_link_id, approved_amount_paise, reference_id)
+                                link_res = razorpay_client.create_payment_link(
+                                    invoice_id=invoice.invoice_id,
+                                    customer_name=invoice.customer_name,
+                                    customer_phone=invoice.customer_phone,
+                                    amount_inr=approved_amount_inr,
+                                    description=f"Settlement for Invoice {invoice.invoice_id}",
+                                    expire_by_timestamp=expiry_timestamp,
+                                    reference_id=ref_id
+                                )
 
-                    fallback_text = (
-                        f"Great news! Your proposed payment of ₹{approved_amount_inr:,.2f} is approved. "
-                        f"I have generated a custom Razorpay payment link for you:\n\n"
-                        f"👉 {payment_link_url}\n\n"
-                        f"This link is valid for {effective_days} days. Completing this payment will update your balance immediately."
-                    )
-                    
-                    llm_resp = self._generate_llm_response(
-                        customer_message, True, guardrail_meta, reason, invoice, guardrails, payment_link_url
-                    )
-                    resp_text = llm_resp if llm_resp else fallback_text
+                                payment_link_url = link_res["short_url"]
+                                tool_executed = f"create_razorpay_payment_link(₹{approved_amount_inr:,.2f})"
+                                guardrail_check_status = "PASS"
+                                thought_summary = f"Approved settlement ₹{approved_amount_inr:,.2f} with link {payment_link_url}."
 
-                except Exception as e:
-                    # Graceful Tool Exception Recovery
-                    resp_text = (
-                        f"I approved your proposal of ₹{approved_amount_inr:,.2f}, but encountered a temporary connection "
-                        f"issue generating your Razorpay link. Please try sending your request again in a moment."
-                    )
-                    tool_executed = f"create_razorpay_payment_link_FAILED: {str(e)}"
+                                # Second Pass to Gemini: Provide Function Result
+                                fn_response_part = {
+                                    "role": "function",
+                                    "parts": [{
+                                        "functionResponse": {
+                                            "name": "propose_settlement_payment",
+                                            "response": {
+                                                "status": "APPROVED",
+                                                "approved_amount_inr": approved_amount_inr,
+                                                "payment_link_url": payment_link_url,
+                                                "instructions": f"The proposal was APPROVED. Confirm ₹{approved_amount_inr:,.2f} and include the link: {payment_link_url}"
+                                            }
+                                        }
+                                    }]
+                                }
 
-            else:
-                # Guardrail REJECTED -> Hard Block API call & Issue Polite Counter-Offer
-                suggested_inr = guardrail_meta.get("suggested_amount_inr", invoice.remaining_amount_inr * 0.3)
-                suggested_ext = guardrail_meta.get("max_allowed_extension_days", 14)
-                
-                fallback_text = (
-                    f"Thank you for your offer. However, {reason} "
-                    f"Based on merchant policy, I can approve an initial payment of ₹{suggested_inr:,.2f} "
-                    f"with a date extension of up to {suggested_ext} days. Would you like me to generate a payment link for ₹{suggested_inr:,.2f}?"
+                                # Append model's function call & function response
+                                second_contents = list(contents)
+                                second_contents.append(candidate)
+                                second_contents.append(fn_response_part)
+
+                                second_payload = {
+                                    "systemInstruction": system_instruction,
+                                    "contents": second_contents
+                                }
+
+                                resp2 = requests.post(url, headers={"Content-Type": "application/json"}, json=second_payload, timeout=6.0)
+                                if resp2.status_code == 200:
+                                    resp_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+                                if not resp_text:
+                                    resp_text = (
+                                        f"Great news! Your payment proposal of ₹{approved_amount_inr:,.2f} has been approved. "
+                                        f"You can make your payment directly here: {payment_link_url}"
+                                    )
+
+                            else:
+                                # Guardrail REJECTED
+                                suggested_inr = guardrail_meta.get("suggested_amount_inr", invoice.remaining_amount_inr * 0.3)
+                                suggested_ext = guardrail_meta.get("max_allowed_extension_days", 14)
+                                guardrail_check_status = "REJECTED"
+                                thought_summary = f"Proposal rejected ({reason}). Counter-offered ₹{suggested_inr:,.2f}."
+
+                                fn_response_part = {
+                                    "role": "function",
+                                    "parts": [{
+                                        "functionResponse": {
+                                            "name": "propose_settlement_payment",
+                                            "response": {
+                                                "status": "REJECTED",
+                                                "reason": reason,
+                                                "suggested_amount_inr": suggested_inr,
+                                                "suggested_extension_days": suggested_ext,
+                                                "instructions": f"Proposal REJECTED ({reason}). Politely counter-offer ₹{suggested_inr:,.2f} with up to {suggested_ext} days extension."
+                                            }
+                                        }
+                                    }]
+                                }
+
+                                second_contents = list(contents)
+                                second_contents.append(candidate)
+                                second_contents.append(fn_response_part)
+
+                                second_payload = {
+                                    "systemInstruction": system_instruction,
+                                    "contents": second_contents
+                                }
+
+                                resp2 = requests.post(url, headers={"Content-Type": "application/json"}, json=second_payload, timeout=6.0)
+                                if resp2.status_code == 200:
+                                    resp_text = resp2.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+                                if not resp_text:
+                                    resp_text = (
+                                        f"Thank you for your offer. However, {reason}. "
+                                        f"Based on merchant policy, I can approve an initial payment of ₹{suggested_inr:,.2f} "
+                                        f"with a date extension up to {suggested_ext} days. Would you like me to generate a payment link?"
+                                    )
+
+                    else:
+                        # Direct text response from Gemini (greetings, general Q&A)
+                        if parts and "text" in parts[0]:
+                            resp_text = parts[0]["text"].strip()
+            except Exception as e:
+                print(f"[Gemini Agent Error]: {e}")
+
+            # Fallback text if LLM call failed
+            if not resp_text:
+                resp_text = (
+                    f"Hello! I am Resolve.ai assistant for invoice '{invoice.invoice_id}'. "
+                    f"Your remaining balance is ₹{invoice.remaining_amount_inr:,.2f} (Due: {invoice.due_date}). "
+                    f"How can I assist you with your payment today?"
                 )
-                
-                llm_resp = self._generate_llm_response(
-                    customer_message, False, guardrail_meta, reason, invoice, guardrails, None
-                )
-                resp_text = llm_resp if llm_resp else fallback_text
 
-            # Record Agent Response in ChatSession
+            # Record Agent Response
             self.session_manager.add_message(
                 session_id=session_id,
                 sender="agent",
@@ -237,226 +347,14 @@ class AgenticNegotiator:
                 }
             )
 
-            # Construct Detailed Inspectable Agent Trace Payload
-            trace_payload = {
-                "thought": f"Evaluated customer proposal ₹{proposed_amount_inr:,.2f} with {extension_days} days extension against guardrails.",
-                "guardrail_check": {
-                    "status": "PASS" if guardrail_passed else "REJECT",
-                    "reason": reason,
-                    "min_required_pct": guardrails.min_partial_payment_pct,
-                    "min_required_inr": paise_to_inr(int(round(invoice.remaining_amount_paise * (guardrails.min_partial_payment_pct / 100.0)))),
-                    "remaining_balance_inr": invoice.remaining_amount_inr
-                },
-                "currency_conversion": currency_conversion_meta,
-                "tool_executed": tool_executed,
-                "payment_link_id": payment_link_id,
-                "payment_link_url": payment_link_url,
-                "response_text": resp_text
-            }
-
             return {
                 "response_text": resp_text,
-                "trace": trace_payload
+                "trace": {
+                    "thought": thought_summary,
+                    "guardrail_check": {"status": guardrail_check_status},
+                    "verified_invoice_status": invoice.status.value,
+                    "remaining_balance_inr": invoice.remaining_amount_inr
+                }
             }
-
-    def _call_gemini_llm_parser(
-        self,
-        message: str,
-        invoice: MasterInvoice,
-        guardrails: Any
-    ) -> Optional[Tuple[float, int, str]]:
-        """
-        Calls Google Gemini REST API to dynamically understand natural language proposals and extract structured parameters.
-        """
-        if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("your_google"):
-            return None
-
-        prompt = f"""
-        You are the NLU intent parser for Resolve.ai, an Indian SME collection platform.
-        Customer Message: "{message}"
-        Invoice Remaining Outstanding Balance: ₹{invoice.remaining_amount_inr}
-        Merchant Guardrail Limits: Minimum partial payment {guardrails.min_partial_payment_pct}%, Max allowed extension {guardrails.max_extension_days} days.
-
-        Analyze the customer message and return a valid raw JSON object:
-        {{
-          "user_intent": "proposal" | "inability_to_pay" | "text_payment_claim" | "general_query" | "escalate",
-          "proposed_amount_inr": number or 0,
-          "requested_extension_days": number or {guardrails.max_extension_days},
-          "reasoning": "brief explanation"
-        }}
-        Return ONLY raw valid JSON. No markdown backticks.
-        NOTE: Use "escalate" if the customer is extremely angry, mentions legal action, fraud, or disputes the service entirely.
-        """
-
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-            headers = {"Content-Type": "application/json"}
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"response_mime_type": "application/json"}
-            }
-
-            resp = requests.post(url, headers=headers, json=payload, timeout=4.0)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = json.loads(text_resp.replace('```json', '').replace('```', '').strip())
-
-                amt = parsed.get("proposed_amount_inr")
-                days = parsed.get("requested_extension_days")
-                intent = parsed.get("user_intent", "general_query")
-
-                if intent == "inability_to_pay":
-                    proposed_amount = 0.0
-                elif amt is not None:
-                    proposed_amount = float(amt)
-                else:
-                    proposed_amount = round(invoice.remaining_amount_inr * 0.40, 2)
-
-                ext_days = int(days) if days is not None else guardrails.max_extension_days
-                return (proposed_amount, ext_days, intent)
-        except Exception:
-            pass
-
-        return None
-
-    def _generate_llm_response(
-        self,
-        customer_message: str,
-        guardrail_passed: bool,
-        guardrail_meta: dict,
-        reason: str,
-        invoice: Any,
-        guardrails: Any,
-        payment_link_url: str = None
-    ) -> str:
-        if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("your_google"):
-            return None
-        
-        status_text = "APPROVED" if guardrail_passed else "REJECTED"
-        
-        if guardrail_passed:
-            approved_amount = guardrail_meta.get('approved_amount_inr', 0)
-            instructions = f"The proposal was APPROVED. You MUST confirm the payment of ₹{approved_amount:,.2f}. You MUST include this exact payment link at the end of your message: {payment_link_url}"
-        else:
-            suggested_amount = guardrail_meta.get('suggested_amount_inr', 0)
-            suggested_ext = guardrail_meta.get('max_allowed_extension_days', 0)
-            instructions = f"The proposal was REJECTED because: {reason}. You MUST issue a firm but polite counter-offer proposing exactly ₹{suggested_amount:,.2f} with a {suggested_ext} day extension. Do NOT hallucinate any payment link. Just ask if they want you to generate a link for ₹{suggested_amount:,.2f}."
-
-        prompt = f"""
-        You are Resolve.ai, an AI collections agent. You are currently negotiating with a customer.
-        Tone: {guardrails.tone}
-        Customer's Message: "{customer_message}"
-        Remaining Invoice Balance: ₹{invoice.remaining_amount_inr:,.2f}
-        
-        System Resolution: {status_text}
-        Strict Instructions: {instructions}
-        
-        Write a natural, conversational response back to the customer directly. Do not output JSON, just the exact text you want to send. Stay strictly in character. Keep it concise.
-        """
-        
-        try:
-            import requests
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}]
-            }
-            resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=5.0)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-                return text_resp
-        except Exception as e:
-            pass
-        return None
-
-    def _parse_proposal_intent(
-        self,
-        message: str,
-        invoice: MasterInvoice,
-        guardrails: Any
-    ) -> Tuple[float, int, str]:
-        """
-        Parses payment proposals using Google Gemini LLM API when configured, with deterministic offline fallback.
-        """
-        # 1. First attempt dynamic LLM Intent Parsing via Google Gemini API
-        llm_parsed = self._call_gemini_llm_parser(message, invoice, guardrails)
-        if llm_parsed is not None:
-            return llm_parsed
-
-        # 2. Offline / Standalone Rule-Based Intent Parser Fallback
-        msg = message.lower()
-        
-        # Check for escalatable intent
-        escalate_keywords = ["fraud", "legal", "police", "dispute", "angry", "terrible", "lawyer"]
-        if any(k in msg for k in escalate_keywords):
-            return (0.0, 0, "escalate")
-
-        # Parse Percentage (e.g., "40%", "30 percent")
-        pct_match = re.search(r'(\d+)\s*(%|percent)', msg)
-        proposed_amount_inr = 0.0
-        intent = "proposal"
-
-        if pct_match:
-            pct_val = float(pct_match.group(1))
-            proposed_amount_inr = round(invoice.remaining_amount_inr * (pct_val / 100.0), 2)
-        else:
-            # Parse Absolute INR Amount (e.g. "20000", "₹20,000", "20k", "20000 rupees")
-            k_match = re.search(r'(\d+(?:\.\d+)?)\s*k\b', msg)
-            if k_match:
-                proposed_amount_inr = float(k_match.group(1)) * 1000.0
-            else:
-                amt_match = re.search(r'(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?', msg)
-                if amt_match:
-                    raw_str = amt_match.group(1).replace(",", "")
-                    val = float(raw_str)
-                    if val > 100:  # Ignore small numbers like dates
-                        proposed_amount_inr = val
-
-        # Check for explicitly stated inability to pay or delay
-        inability_keywords = ["won't be able to pay", "can't pay", "cannot pay", "no money", "delay", "unable to pay", "can't do today"]
-        has_inability_claim = any(k in msg for k in inability_keywords)
-
-        # Default fallback if no amount detected
-        if proposed_amount_inr <= 0:
-            if has_inability_claim:
-                proposed_amount_inr = 0.0  # Zero payment offer -> Force Guardrail REJECT & Counter-offer
-            else:
-                proposed_amount_inr = round(invoice.remaining_amount_inr * 0.40, 2)
-
-        # Parse Extension Days (e.g., "7 days", "next week", "14 days", "another month", "1 month")
-        days_match = re.search(r'(\d+)\s*(?:days?|date extension)', msg)
-        extension_days = guardrails.max_extension_days
-
-        if days_match:
-            extension_days = int(days_match.group(1))
-        elif "another month" in msg or "1 month" in msg or "next month" in msg:
-            extension_days = 30
-        elif "2 months" in msg:
-            extension_days = 60
-        elif "next week" in msg or "7 days" in msg:
-            extension_days = 7
-        elif "2 weeks" in msg or "14 days" in msg:
-            extension_days = 14
-
-        return (proposed_amount_inr, extension_days, intent)
-
-    def _record_payment_link(
-        self,
-        invoice_id: str,
-        payment_link_id: str,
-        amount_paise: int,
-        reference_id: str
-    ):
-        """Records created payment link in the database."""
-        conn = get_connection(self.db_path)
-        cursor = conn.cursor()
-        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        cursor.execute("""
-        INSERT INTO payment_links (invoice_id, razorpay_payment_link_id, amount_paise, status, reference_id, created_at)
-        VALUES (?, ?, ?, 'ACTIVE', ?, ?);
-        """, (invoice_id, payment_link_id, amount_paise, reference_id, created_at))
-        conn.commit()
-        conn.close()
 
 agentic_negotiator = AgenticNegotiator()

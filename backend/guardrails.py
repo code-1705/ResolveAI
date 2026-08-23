@@ -18,12 +18,8 @@ def paise_to_inr(amount_in_paise: int) -> float:
     return round(amount_in_paise / 100.0, 2)
 
 class GuardrailEngine:
-    def __init__(self, db_path: Optional[str] = None):
-        self._db_path = db_path
-
-    @property
-    def db_path(self) -> str:
-        return self._db_path or settings.DATABASE_PATH
+    def __init__(self):
+        pass
 
     def validate_proposal(
         self,
@@ -33,17 +29,17 @@ class GuardrailEngine:
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Deterministically evaluates a client negotiation proposal against merchant guardrails and platform bounds.
-        
+
         Enforces 4 Invariant Bounds:
         1. Integer Paise Conversion (Zero Float Drift)
         2. Lower Floor Bound: proposed_amount_paise >= min_required_paise
         3. Upper Ceiling Bound: proposed_amount_paise <= remaining_amount_paise
         4. Razorpay Platform 180-Day Extension Limit: extension_days <= min(max_extension_days, 180)
-        
+
         Returns: (is_valid: bool, reason: str, counter_offer: dict)
         """
-        guardrails = get_guardrails(self.db_path) if self.db_path else get_guardrails()
-        invoice = get_invoice(invoice_id, self.db_path) if self.db_path else get_invoice(invoice_id)
+        guardrails = get_guardrails()
+        invoice = get_invoice(invoice_id)
 
         if not invoice:
             return (False, f"Invoice '{invoice_id}' not found.", {})

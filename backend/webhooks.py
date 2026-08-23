@@ -37,7 +37,7 @@ class InvoiceLock:
         self.invoice_id = invoice_id
         self.redis_lock = None
         self.memory_lock = None
-        
+
         if redis_client:
             self.redis_lock = redis_client.lock(f"lock:invoice:{invoice_id}", timeout=30)
         else:
@@ -80,7 +80,7 @@ def verify_meta_webhook(mode: str, token: str, challenge: str) -> Tuple[bool, st
         return (True, challenge)
     return (False, "Invalid verification token or mode")
 
-def process_whatsapp_webhook(payload: Dict[str, Any], db_path: Optional[str] = None) -> Dict[str, Any]:
+def process_whatsapp_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Parses POST /api/webhooks/whatsapp incoming message payloads from Meta Graph API.
     Handles both 'text' messages and 'interactive' button/list selection replies.
@@ -130,7 +130,7 @@ def process_whatsapp_webhook(payload: Dict[str, Any], db_path: Optional[str] = N
             }
 
         # Case B: Standard text message -> Perform Multi-Invoice Phone Query
-        all_invoices = get_invoices_by_phone(customer_phone, db_path)
+        all_invoices = get_invoices_by_phone(customer_phone)
         active_invoices = [
             inv for inv in all_invoices 
             if inv.status in (InvoiceStatus.UNPAID, InvoiceStatus.NEGOTIATING, InvoiceStatus.PARTIALLY_PAID)
@@ -156,13 +156,13 @@ def process_whatsapp_webhook(payload: Dict[str, Any], db_path: Optional[str] = N
                     "id": f"select_invoice_{inv.invoice_id}",
                     "title": f"Invoice {inv.invoice_id}"
                 })
-            
+
             prompt_msg = (
                 f"Hi! You have {len(active_invoices)} active overdue invoices. "
                 "Which invoice would you like to resolve today?"
             )
             whatsapp_client.send_interactive_buttons(customer_phone, prompt_msg, button_options)
-            
+
             return {
                 "status": "multi_invoice_prompt_sent",
                 "customer_phone": customer_phone,
@@ -185,7 +185,7 @@ def process_whatsapp_webhook(payload: Dict[str, Any], db_path: Optional[str] = N
 
 # --- Razorpay Asynchronous Reconciler ---
 
-async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str] = None) -> Dict[str, Any]:
+async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Asynchronous Payment Reconciler for Razorpay Webhooks.
     Executes strictly inside an invoice row lock to prevent race conditions.
@@ -216,9 +216,9 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
 
     if not invoice_id and razorpay_payment_link_id:
         # Query DB for linked invoice_id
-        conn = get_connection(db_path or settings.DATABASE_PATH)
+        conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT invoice_id FROM payment_links WHERE razorpay_payment_link_id = ?;", (razorpay_payment_link_id,))
+        cursor.execute("SELECT invoice_id FROM payment_links WHERE razorpay_payment_link_id = %s;", (razorpay_payment_link_id,))
         row = cursor.fetchone()
         conn.close()
         if row:
@@ -244,7 +244,7 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
     # Acquire Async Invoice Row Lock
     lock = get_invoice_lock(invoice_id)
     async with lock:
-        invoice = get_invoice(invoice_id, db_path)
+        invoice = get_invoice(invoice_id)
         if not invoice:
             return {"status": "error", "reason": f"Invoice '{invoice_id}' not found"}
 
@@ -255,7 +255,7 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
             razorpay_payment_link_id=razorpay_payment_link_id,
             amount_paid_paise=amount_paise,
             payment_method=payment_method,
-            db_path=db_path
+
         )
 
         if is_duplicate:
@@ -275,7 +275,7 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
         invoice.paid_amount_paise = new_paid_paise
         invoice.remaining_amount_paise = new_remaining_paise
         invoice.status = target_status
-        upsert_invoice(invoice, db_path)
+        upsert_invoice(invoice)
 
         # 6. Deactivate Superseded Payment Links
         if razorpay_payment_link_id:
@@ -288,7 +288,7 @@ async def reconcile_payment_event(payload: Dict[str, Any], db_path: Optional[str
         session_id = f"{invoice.customer_phone}_{invoice_id}"
         amount_inr = paise_to_inr(amount_paise)
         remaining_inr = paise_to_inr(new_remaining_paise)
-        
+
         if target_status == InvoiceStatus.PAID:
             conf_text = (
                 f"🎉 Payment Confirmed! We received your payment of ₹{amount_inr:,.2f} (Payment ID: {razorpay_payment_id}). "

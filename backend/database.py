@@ -30,10 +30,10 @@ def validate_fsm_transition(current_status: str, new_status: str) -> bool:
     """Validates directional invoice lifecycle transitions."""
     if current_status == new_status:
         return True  # Idempotent state re-affirmation
-    
+
     current_enum = InvoiceStatus(current_status)
     new_enum = InvoiceStatus(new_status)
-    
+
     allowed = ALLOWED_FSM_TRANSITIONS.get(current_enum, set())
     if new_enum not in allowed:
         raise FSMStateError(
@@ -45,7 +45,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 
 def get_connection():
-    return psycopg2.connect(settings.DATABASE_URL)
+    return psycopg2.connect(settings.DATABASE_URL, cursor_factory=DictCursor)
 
 def init_db():
     conn = get_connection()
@@ -258,16 +258,16 @@ def update_invoice_status(invoice_id: str, new_status: str, ) -> MasterInvoice:
     invoice = get_invoice(invoice_id, )
     if not invoice:
         raise ValueError(f"Invoice '{invoice_id}' not found.")
-    
+
     # Enforce FSM state transitions
     validate_fsm_transition(invoice.status.value, new_status)
-    
+
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("UPDATE master_invoices SET status = %s WHERE invoice_id = %s;", (new_status, invoice_id))
     conn.commit()
     conn.close()
-    
+
     invoice.status = InvoiceStatus(new_status)
     return invoice
 
@@ -277,7 +277,7 @@ def record_transaction(
     razorpay_payment_link_id: Optional[str],
     amount_paid_paise: int,
     payment_method: str = "UPI",
-    
+
 ) -> Tuple[bool, bool]:
     """
     Records a payment transaction into the TransactionLedger table.
@@ -287,7 +287,7 @@ def record_transaction(
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
     created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    
+
     try:
         cursor.execute("""
         INSERT INTO transaction_ledger (invoice_id, razorpay_payment_id, razorpay_payment_link_id, amount_paid_paise, payment_method, created_at)
