@@ -16,6 +16,23 @@ class PaymentLinkStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 @dataclass
+class Merchant:
+    merchant_id: str
+    email: str
+    business_name: str
+    phone: Optional[str] = None
+    created_at: Optional[str] = None
+    bank_beneficiary_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_name: Optional[str] = None
+    upi_id: Optional[str] = None
+    pan_number: Optional[str] = None
+    commission_pct: float = 1.0
+    settlement_status: str = "ACTIVE"
+    password_hash: Optional[str] = None
+
+@dataclass
 class MerchantGuardrails:
     id: int = 1
     min_partial_payment_pct: float = 30.0

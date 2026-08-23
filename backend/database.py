@@ -3,6 +3,7 @@ import datetime
 from typing import Optional, List, Tuple, Dict, Any
 from backend.config import settings
 from backend.models import (
+    Merchant,
     MerchantGuardrails,
     MasterInvoice,
     TransactionLedger,
@@ -54,6 +55,22 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
+
+    # 0. Merchants Table (Multi-Tenant Accounts)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS merchants (
+        merchant_id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        business_name TEXT NOT NULL,
+        phone TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    """)
+    cursor.execute("""
+    INSERT INTO merchants (merchant_id, email, business_name, phone)
+    VALUES ('default_merchant', 'merchant@resolveai.com', 'Resolve.ai Merchant', '+919876543210')
+    ON CONFLICT (merchant_id) DO NOTHING;
+    """)
 
     # 1. Merchant Guardrails Table
     cursor.execute("""
@@ -192,12 +209,13 @@ def update_guardrails(guardrails: MerchantGuardrails, ) -> MerchantGuardrails:
     conn.close()
     return guardrails
 
-def upsert_invoice(invoice: MasterInvoice, ) -> MasterInvoice:
+def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) -> MasterInvoice:
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
+    m_id = merchant_id or getattr(invoice, 'merchant_id', 'default_merchant') or 'default_merchant'
     cursor.execute("""
-    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention, merchant_id)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT(invoice_id) DO UPDATE SET
         customer_name=excluded.customer_name,
         customer_phone=excluded.customer_phone,
@@ -206,7 +224,8 @@ def upsert_invoice(invoice: MasterInvoice, ) -> MasterInvoice:
         remaining_amount_paise=excluded.remaining_amount_paise,
         due_date=excluded.due_date,
         status=excluded.status,
-        requires_human_attention=excluded.requires_human_attention;
+        requires_human_attention=excluded.requires_human_attention,
+        merchant_id=COALESCE(excluded.merchant_id, master_invoices.merchant_id);
     """, (
         invoice.invoice_id,
         invoice.customer_name,
@@ -216,7 +235,8 @@ def upsert_invoice(invoice: MasterInvoice, ) -> MasterInvoice:
         invoice.remaining_amount_paise,
         invoice.due_date,
         invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status,
-        invoice.requires_human_attention
+        invoice.requires_human_attention,
+        m_id
     ))
     conn.commit()
     conn.close()
@@ -494,3 +514,193 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
         "invoices": invoices_list,
         "transactions": transactions_list
     }
+
+
+def get_merchant_by_id(merchant_id: str) -> Optional[Merchant]:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("SELECT * FROM merchants WHERE merchant_id = %s;", (merchant_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return Merchant(
+            merchant_id=row["merchant_id"],
+            email=row["email"],
+            business_name=row["business_name"],
+            phone=row.get("phone"),
+            created_at=str(row.get("created_at", "")),
+            bank_beneficiary_name=row.get("bank_beneficiary_name"),
+            bank_account_number=row.get("bank_account_number"),
+            bank_ifsc=row.get("bank_ifsc"),
+            bank_name=row.get("bank_name"),
+            upi_id=row.get("upi_id"),
+            pan_number=row.get("pan_number"),
+            commission_pct=float(row.get("commission_pct") or 1.0),
+            settlement_status=row.get("settlement_status") or "ACTIVE"
+        )
+    return None
+
+def update_merchant_bank_settlement(
+    merchant_id: str,
+    bank_beneficiary_name: str,
+    bank_account_number: str,
+    bank_ifsc: str,
+    bank_name: Optional[str] = None,
+    upi_id: Optional[str] = None,
+    pan_number: Optional[str] = None
+) -> Optional[Merchant]:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("""
+    UPDATE merchants
+    SET bank_beneficiary_name = %s,
+        bank_account_number = %s,
+        bank_ifsc = %s,
+        bank_name = %s,
+        upi_id = %s,
+        pan_number = %s,
+        settlement_status = 'ACTIVE'
+    WHERE merchant_id = %s
+    RETURNING *;
+    """, (
+        bank_beneficiary_name.strip(),
+        bank_account_number.strip(),
+        bank_ifsc.strip().upper(),
+        (bank_name or "").strip(),
+        (upi_id or "").strip(),
+        (pan_number or "").strip().upper(),
+        merchant_id
+    ))
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    if row:
+        return Merchant(
+            merchant_id=row["merchant_id"],
+            email=row["email"],
+            business_name=row["business_name"],
+            phone=row.get("phone"),
+            created_at=str(row.get("created_at", "")),
+            bank_beneficiary_name=row.get("bank_beneficiary_name"),
+            bank_account_number=row.get("bank_account_number"),
+            bank_ifsc=row.get("bank_ifsc"),
+            bank_name=row.get("bank_name"),
+            upi_id=row.get("upi_id"),
+            pan_number=row.get("pan_number"),
+            commission_pct=float(row.get("commission_pct") or 1.0),
+            settlement_status=row.get("settlement_status") or "ACTIVE"
+        )
+    return None
+
+def get_or_create_merchant(merchant_id: str, email: str, business_name: str, phone: Optional[str] = None) -> Merchant:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("SELECT * FROM merchants WHERE merchant_id = %s OR email = %s;", (merchant_id, email))
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return Merchant(
+            merchant_id=row["merchant_id"],
+            email=row["email"],
+            business_name=row["business_name"],
+            phone=row.get("phone"),
+            created_at=str(row.get("created_at", "")),
+            bank_beneficiary_name=row.get("bank_beneficiary_name"),
+            bank_account_number=row.get("bank_account_number"),
+            bank_ifsc=row.get("bank_ifsc"),
+            bank_name=row.get("bank_name"),
+            upi_id=row.get("upi_id"),
+            pan_number=row.get("pan_number"),
+            commission_pct=float(row.get("commission_pct") or 1.0),
+            settlement_status=row.get("settlement_status") or "ACTIVE",
+            password_hash=row.get("password_hash")
+        )
+    
+    cursor.execute("""
+    INSERT INTO merchants (merchant_id, email, business_name, phone, settlement_status)
+    VALUES (%s, %s, %s, %s, 'ACTIVE')
+    ON CONFLICT (merchant_id) DO UPDATE SET business_name = EXCLUDED.business_name
+    RETURNING *;
+    """, (merchant_id, email, business_name, phone))
+    new_row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    return Merchant(
+        merchant_id=new_row["merchant_id"],
+        email=new_row["email"],
+        business_name=new_row["business_name"],
+        phone=new_row.get("phone"),
+        created_at=str(new_row.get("created_at", "")),
+        bank_beneficiary_name=new_row.get("bank_beneficiary_name"),
+        bank_account_number=new_row.get("bank_account_number"),
+        bank_ifsc=new_row.get("bank_ifsc"),
+        bank_name=new_row.get("bank_name"),
+        upi_id=new_row.get("upi_id"),
+        pan_number=new_row.get("pan_number"),
+        commission_pct=float(new_row.get("commission_pct") or 1.0),
+        settlement_status=new_row.get("settlement_status") or "ACTIVE",
+        password_hash=new_row.get("password_hash")
+    )
+
+
+def get_merchant_by_email(email: str) -> Optional[Merchant]:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("SELECT * FROM merchants WHERE LOWER(email) = LOWER(%s);", (email.strip(),))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return Merchant(
+            merchant_id=row["merchant_id"],
+            email=row["email"],
+            business_name=row["business_name"],
+            phone=row.get("phone"),
+            created_at=str(row.get("created_at", "")),
+            bank_beneficiary_name=row.get("bank_beneficiary_name"),
+            bank_account_number=row.get("bank_account_number"),
+            bank_ifsc=row.get("bank_ifsc"),
+            bank_name=row.get("bank_name"),
+            upi_id=row.get("upi_id"),
+            pan_number=row.get("pan_number"),
+            commission_pct=float(row.get("commission_pct") or 1.0),
+            settlement_status=row.get("settlement_status") or "ACTIVE",
+            password_hash=row.get("password_hash")
+        )
+    return None
+
+def create_merchant_with_password(
+    merchant_id: str,
+    email: str,
+    business_name: str,
+    password_hash: str,
+    phone: Optional[str] = None
+) -> Merchant:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("""
+    INSERT INTO merchants (merchant_id, email, business_name, password_hash, phone, settlement_status)
+    VALUES (%s, %s, %s, %s, %s, 'ACTIVE')
+    ON CONFLICT (merchant_id) DO UPDATE SET
+        business_name = EXCLUDED.business_name,
+        password_hash = COALESCE(EXCLUDED.password_hash, merchants.password_hash)
+    RETURNING *;
+    """, (merchant_id, email.strip().lower(), business_name.strip(), password_hash, phone))
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    return Merchant(
+        merchant_id=row["merchant_id"],
+        email=row["email"],
+        business_name=row["business_name"],
+        phone=row.get("phone"),
+        created_at=str(row.get("created_at", "")),
+        bank_beneficiary_name=row.get("bank_beneficiary_name"),
+        bank_account_number=row.get("bank_account_number"),
+        bank_ifsc=row.get("bank_ifsc"),
+        bank_name=row.get("bank_name"),
+        upi_id=row.get("upi_id"),
+        pan_number=row.get("pan_number"),
+        commission_pct=float(row.get("commission_pct") or 1.0),
+        settlement_status=row.get("settlement_status") or "ACTIVE",
+        password_hash=row.get("password_hash")
+    )

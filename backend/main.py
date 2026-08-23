@@ -1,3 +1,6 @@
+import jwt
+from backend.auth import get_current_merchant
+from backend.models import Merchant
 import time
 import base64
 import requests
@@ -7,7 +10,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, BackgroundTasks, HTTPException, Query, File, UploadFile, status
+from fastapi import FastAPI, Request, Depends, Response, BackgroundTasks, HTTPException, Query, File, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -22,7 +25,12 @@ from backend.database import (
     update_guardrails,
     get_invoice,
     upsert_invoice,
-    get_connection
+    get_connection,
+    get_or_create_merchant,
+    get_merchant_by_id,
+    update_merchant_bank_settlement,
+    get_merchant_by_email,
+    create_merchant_with_password
 )
 from backend.guardrails import GuardrailEngine, paise_to_inr, inr_to_paise
 from backend.razorpay_client import razorpay_client
@@ -190,6 +198,227 @@ async def sse_events_endpoint(request: Request):
                 EVENT_QUEUES.remove(queue)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+
+
+# --- Merchant Direct Bank Settlement & 1% Platform Commission Routes ---
+class BankSettlementUpdateRequest(BaseModel):
+    bank_beneficiary_name: str
+    bank_account_number: str
+    bank_ifsc: str
+    bank_name: Optional[str] = None
+    upi_id: Optional[str] = None
+    pan_number: Optional[str] = None
+
+@app.get("/api/merchant/bank-settlement")
+async def get_merchant_bank_settlement_config(merchant: Merchant = Depends(get_current_merchant)):
+    """Returns the authenticated merchant's configured bank settlement details & 1% platform fee structure."""
+    m = get_merchant_by_id(merchant.merchant_id) or merchant
+    acc = m.bank_account_number or ""
+    masked_acc = f"••••••••{acc[-4:]}" if len(acc) >= 4 else (acc or "Not Configured")
+    
+    return {
+        "merchant_id": m.merchant_id,
+        "business_name": m.business_name,
+        "bank_beneficiary_name": m.bank_beneficiary_name or m.business_name,
+        "bank_account_number": m.bank_account_number or "",
+        "bank_account_masked": masked_acc,
+        "bank_ifsc": m.bank_ifsc or "",
+        "bank_name": m.bank_name or "",
+        "upi_id": m.upi_id or "",
+        "pan_number": m.pan_number or "",
+        "commission_pct": getattr(m, 'commission_pct', 1.0) or 1.0,
+        "settlement_payout_pct": 100.0 - (getattr(m, 'commission_pct', 1.0) or 1.0),
+        "settlement_cycle": "Direct Bank Settlement (T+1 Days)",
+        "settlement_status": getattr(m, 'settlement_status', 'ACTIVE') or 'ACTIVE',
+        "gateway_mode": "Resolve.ai Master Platform Gateway (Auto 1% Split)"
+    }
+
+@app.post("/api/merchant/bank-settlement")
+async def save_merchant_bank_settlement_config(req: BankSettlementUpdateRequest, merchant: Merchant = Depends(get_current_merchant)):
+    """Saves or updates merchant bank settlement details for direct 99% automated payout."""
+    if not req.bank_account_number.strip() or len(req.bank_account_number.strip()) < 8:
+        raise HTTPException(status_code=400, detail="Invalid bank account number (minimum 8 digits required)")
+    
+    if not req.bank_ifsc.strip() or len(req.bank_ifsc.strip()) != 11:
+        raise HTTPException(status_code=400, detail="Invalid IFSC Code (must be exactly 11 characters e.g. HDFC0001234)")
+
+    updated = update_merchant_bank_settlement(
+        merchant_id=merchant.merchant_id,
+        bank_beneficiary_name=req.bank_beneficiary_name,
+        bank_account_number=req.bank_account_number,
+        bank_ifsc=req.bank_ifsc,
+        bank_name=req.bank_name,
+        upi_id=req.upi_id,
+        pan_number=req.pan_number
+    )
+    
+    acc = updated.bank_account_number or ""
+    masked_acc = f"••••••••{acc[-4:]}" if len(acc) >= 4 else acc
+
+    return {
+        "success": True,
+        "message": "Bank Settlement Account updated successfully!",
+        "merchant": {
+            "merchant_id": updated.merchant_id,
+            "business_name": updated.business_name,
+            "bank_beneficiary_name": updated.bank_beneficiary_name,
+            "bank_account_masked": masked_acc,
+            "bank_ifsc": updated.bank_ifsc,
+            "bank_name": updated.bank_name,
+            "upi_id": updated.upi_id,
+            "commission_pct": updated.commission_pct,
+            "settlement_status": updated.settlement_status
+        }
+    }
+
+# --- Merchant Authentication & Registration Routes ---
+def _hash_merchant_password(password: str) -> str:
+    import hashlib
+    salt = "resolve_ai_salt_2026_"
+    return hashlib.sha256((salt + password).encode()).hexdigest()
+
+class MerchantAuthRequest(BaseModel):
+    business_name: Optional[str] = None
+    email: str
+    password: str
+    phone: Optional[str] = None
+
+@app.post("/api/auth/register")
+async def register_merchant_account(req: MerchantAuthRequest):
+    """Registers a new merchant and permanently saves them to the PostgreSQL merchants table with hashed password."""
+    import hashlib
+    email_clean = req.email.strip().lower()
+    if not req.password or len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    existing = get_merchant_by_email(email_clean)
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists. Please Sign In.")
+    
+    b_name = (req.business_name or email_clean.split('@')[0]).strip()
+    merchant_id = f"m_{hashlib.md5(email_clean.encode()).hexdigest()[:10]}"
+    pwd_hash = _hash_merchant_password(req.password)
+    
+    merchant = create_merchant_with_password(
+        merchant_id=merchant_id,
+        email=email_clean,
+        business_name=b_name,
+        password_hash=pwd_hash,
+        phone=req.phone
+    )
+    
+    token = jwt.encode({
+        "sub": merchant.merchant_id,
+        "email": merchant.email,
+        "user_metadata": {
+            "business_name": merchant.business_name,
+            "phone": merchant.phone
+        }
+    }, "secret", algorithm="HS256")
+    
+    return {
+        "session": {
+            "access_token": token,
+            "user": {
+                "id": merchant.merchant_id,
+                "email": merchant.email,
+                "user_metadata": {
+                    "business_name": merchant.business_name,
+                    "phone": merchant.phone
+                }
+            }
+        },
+        "merchant": merchant
+    }
+
+@app.post("/api/auth/login")
+async def login_merchant_account(req: MerchantAuthRequest):
+    """Logs in a merchant with strict password hash comparison."""
+    import hashlib
+    email_clean = req.email.strip().lower()
+    if not req.password:
+        raise HTTPException(status_code=400, detail="Password is required")
+        
+    merchant = get_merchant_by_email(email_clean)
+    if not merchant:
+        raise HTTPException(status_code=401, detail="Invalid email or password. Please check your credentials.")
+    
+    pwd_hash = _hash_merchant_password(req.password)
+    if merchant.password_hash and merchant.password_hash != pwd_hash:
+        raise HTTPException(status_code=401, detail="Invalid email or password. Please check your credentials.")
+    
+    # If legacy record without password hash, upgrade it
+    if not merchant.password_hash:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE merchants SET password_hash = %s WHERE merchant_id = %s;", (pwd_hash, merchant.merchant_id))
+        conn.commit()
+        conn.close()
+
+    token = jwt.encode({
+        "sub": merchant.merchant_id,
+        "email": merchant.email,
+        "user_metadata": {
+            "business_name": merchant.business_name,
+            "phone": merchant.phone
+        }
+    }, "secret", algorithm="HS256")
+    
+    return {
+        "session": {
+            "access_token": token,
+            "user": {
+                "id": merchant.merchant_id,
+                "email": merchant.email,
+                "user_metadata": {
+                    "business_name": merchant.business_name,
+                    "phone": merchant.phone
+                }
+            }
+        },
+        "merchant": merchant
+    }
+
+# --- Merchant Authentication Profile Route ---
+
+class MerchantProfileUpdateRequest(BaseModel):
+    business_name: str
+    phone: Optional[str] = None
+
+@app.put("/api/merchant/profile")
+async def update_merchant_profile(req: MerchantProfileUpdateRequest, merchant: Merchant = Depends(get_current_merchant)):
+    """Updates the authenticated merchant's official organization / business name."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE merchants
+    SET business_name = %s,
+        phone = COALESCE(%s, phone)
+    WHERE merchant_id = %s
+    RETURNING merchant_id, email, business_name, phone;
+    """, (req.business_name.strip(), req.phone, merchant.merchant_id))
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    
+    return {
+        "merchant_id": row[0],
+        "email": row[1],
+        "business_name": row[2],
+        "phone": row[3]
+    }
+
+@app.get("/api/auth/me")
+async def get_authenticated_merchant(merchant: Merchant = Depends(get_current_merchant)):
+    """Returns the authenticated merchant profile context."""
+    return {
+        "merchant_id": merchant.merchant_id,
+        "email": merchant.email,
+        "business_name": merchant.business_name,
+        "phone": merchant.phone
+    }
 
 # --- 2. Master Invoice Endpoints ---
 
@@ -421,11 +650,12 @@ async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(.
 from urllib.parse import quote_plus
 
 @app.get("/api/invoices")
-async def list_invoices():
-    """Returns list of all master invoices with balance progress and status."""
+async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
+    """Returns list of master invoices scoped strictly to the authenticated merchant."""
+    from psycopg2.extras import DictCursor
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM master_invoices ORDER BY due_date ASC;")
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("SELECT * FROM master_invoices WHERE merchant_id = %s ORDER BY due_date ASC;", (merchant.merchant_id,))
     rows = cursor.fetchall()
     conn.close()
 
@@ -473,15 +703,16 @@ async def get_invoice_detail(invoice_id: str):
     }
 
 @app.post("/api/invoices")
-async def create_invoice(req: CreateInvoiceRequest):
-    """Creates a new master invoice with integer paise currency conversion and stores private BYTEA blob if provided."""
+async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends(get_current_merchant)):
+    """Creates a new master invoice scoped strictly for the authenticated merchant."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM master_invoices;")
+    cursor.execute("SELECT COUNT(*) FROM master_invoices WHERE merchant_id = %s;", (merchant.merchant_id,))
     count = cursor.fetchone()[0]
     conn.close()
 
-    invoice_id = f"inv_SME_{count + 1:03d}"
+    prefix = merchant.merchant_id[:6] if len(merchant.merchant_id) >= 6 else "SME"
+    invoice_id = f"inv_{prefix}_{count + 1:03d}"
     paise_amount = inr_to_paise(req.original_amount_inr)
 
     inv = MasterInvoice(
@@ -495,7 +726,7 @@ async def create_invoice(req: CreateInvoiceRequest):
         status=InvoiceStatus.UNPAID
     )
 
-    upsert_invoice(inv)
+    upsert_invoice(inv, merchant_id=merchant.merchant_id)
 
     if req.file_bytes_b64 and req.file_name and req.file_mime_type:
         try:

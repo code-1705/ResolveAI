@@ -1,9 +1,75 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { supabase } from './supabaseClient';
+import AuthView from './AuthView';
 import './index.css';
 
 const API_BASE = 'http://localhost:8000';
 
+// Toast Container Component
+function ToastContainer({ toasts, removeToast }) {
+  if (!toasts || toasts.length === 0) return null;
+  return (
+    <div style={{
+      position: 'fixed',
+      top: '20px',
+      right: '20px',
+      zIndex: 9999,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '10px',
+      maxWidth: '380px'
+    }}>
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          style={{
+            padding: '12px 16px',
+            borderRadius: '10px',
+            background: t.type === 'error' ? '#FEF2F2' : t.type === 'success' ? '#F0FDF4' : '#EFF6FF',
+            border: `1px solid ${t.type === 'error' ? '#FCA5A5' : t.type === 'success' ? '#86EFAC' : '#93C5FD'}`,
+            color: t.type === 'error' ? '#991B1B' : t.type === 'success' ? '#166534' : '#1E40AF',
+            fontSize: '0.85rem',
+            fontWeight: '500',
+            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>{t.type === 'error' ? '⚠️' : t.type === 'success' ? '✓' : 'ℹ️'}</span>
+            <span>{t.message}</span>
+          </div>
+          <button
+            onClick={() => removeToast(t.id)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 'bold' }}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
+    // Toast State Management
+  const [toasts, setToasts] = useState([]);
+  const showToast = (message, type = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4000);
+  };
+  const removeToast = (id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const [merchantSession, setMerchantSession] = useState(null);
+  const [merchantProfile, setMerchantProfile] = useState(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard' | 'guardrails' | 'simulator'
   const [activeCategory, setActiveCategory] = useState('OVERDUE');
   
@@ -16,6 +82,41 @@ export default function App() {
     auto_discount_waiver_pct: 5,
     tone: 'professional_empathetic'
   });
+
+  // Bank Settlement State
+  const [bankConfig, setBankConfig] = useState({
+    bank_beneficiary_name: '',
+    bank_account_number: '',
+    bank_account_confirm: '',
+    bank_ifsc: '',
+    bank_name: '',
+    upi_id: '',
+    pan_number: '',
+    commission_pct: 1.0,
+    settlement_payout_pct: 99.0,
+    settlement_cycle: 'Direct Bank Settlement (T+1 Days)',
+    settlement_status: 'ACTIVE',
+    bank_account_masked: 'Not Configured'
+  });
+  const [isSavingBank, setIsSavingBank] = useState(false);
+  const [bankErrorMsg, setBankErrorMsg] = useState(null);
+  const [isEditingBank, setIsEditingBank] = useState(false);
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+
+  // Mandatory Bank Account Setup Gate check
+  const isBankSetupComplete = Boolean(
+    bankConfig?.bank_account_number &&
+    bankConfig.bank_account_number.trim().length >= 8 &&
+    bankConfig?.bank_ifsc &&
+    bankConfig.bank_ifsc.trim().length === 11
+  );
+
+  // Check if current logged-in merchant is a testing/demo account
+  const isTestAccount = Boolean(
+    merchantSession?.user?.email === 'merchant@resolveai.com' ||
+    merchantProfile?.merchant_id === 'default_merchant' ||
+    merchantSession?.user?.email?.toLowerCase().includes('test')
+  );
   const [analytics, setAnalytics] = useState({
     total_overdue_tpv_inr: 0,
     recovered_tpv_inr: 0,
@@ -86,13 +187,7 @@ export default function App() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractError, setExtractError] = useState(null);
-  // Toast Notification System
-  const [toast, setToast] = useState(null); // { message, type }
 
-  const showToast = (message, type = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
-  };
 
   const [newBillData, setNewBillData] = useState({
     customer_name: '',
@@ -126,6 +221,29 @@ export default function App() {
     }
   }, [chatMessages]);
 
+
+  // Supabase Auth Session Management
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setMerchantSession(session);
+      setIsAuthChecking(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setMerchantSession(session);
+      setIsAuthChecking(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const getAuthHeaders = () => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (merchantSession?.access_token) {
+      headers['Authorization'] = `Bearer ${merchantSession.access_token}`;
+    }
+    return headers;
+  };
 
   // WhatsApp Rich Text Renderer (Converts *bold*, **bold**, `code`, and * bullets into clean styling)
   const renderWhatsAppText = (text) => {
@@ -173,25 +291,57 @@ export default function App() {
     });
   };
 
-  // Fetch initial data
+  // Mandatory Navigation & Tab Guard (Waits for data to load from server)
+  useEffect(() => {
+    if (!merchantSession || !isDataLoaded) return;
+
+    if (!isBankSetupComplete) {
+      if (activeTab !== 'settlement') {
+        setActiveTab('settlement');
+      }
+    } else if (!isTestAccount && activeTab === 'simulator') {
+      setActiveTab('dashboard');
+    }
+  }, [merchantSession, isDataLoaded, isBankSetupComplete, isTestAccount, activeTab]);
+
+  // Fetch initial data scoped to authenticated merchant
   const fetchData = async () => {
     try {
-      const [invRes, guardRes, anaRes] = await Promise.all([
-        fetch(`${API_BASE}/api/invoices`),
-        fetch(`${API_BASE}/api/guardrails`),
-        fetch(`${API_BASE}/api/analytics`)
+      const headers = getAuthHeaders();
+      const [invRes, guardRes, anaRes, profileRes, bankRes] = await Promise.all([
+        fetch(`${API_BASE}/api/invoices`, { headers }),
+        fetch(`${API_BASE}/api/guardrails`, { headers }),
+        fetch(`${API_BASE}/api/analytics`, { headers }),
+        fetch(`${API_BASE}/api/auth/me`, { headers }),
+        fetch(`${API_BASE}/api/merchant/bank-settlement`, { headers })
       ]);
       if (invRes.ok) setInvoices(await invRes.json());
       if (guardRes.ok) setGuardrails(await guardRes.json());
       if (anaRes.ok) setAnalytics(await anaRes.json());
+      if (profileRes.ok) setMerchantProfile(await profileRes.json());
+      if (bankRes.ok) {
+        const bData = await bankRes.json();
+        setBankConfig(prev => ({ ...prev, ...bData, bank_account_confirm: bData.bank_account_number || '' }));
+        const isConfigured = Boolean(bData.bank_account_number && bData.bank_account_number.length >= 8 && bData.bank_ifsc);
+        setIsEditingBank(!isConfigured);
+        if (isConfigured && activeTab === 'settlement' && !isDataLoaded) {
+          setActiveTab('dashboard');
+        }
+      }
+      setIsDataLoaded(true);
     } catch (err) {
       console.error('API Fetch error:', err);
     }
   };
 
+  // Trigger data fetch whenever active merchant session changes
   useEffect(() => {
-    fetchData();
+    if (merchantSession) {
+      fetchData();
+    }
+  }, [merchantSession]);
 
+  useEffect(() => {
     // Setup Real-time SSE Stream
     const eventSource = new EventSource(`${API_BASE}/api/events`);
     
@@ -497,12 +647,76 @@ export default function App() {
     }
   };
 
+  // Save Bank Settlement Details Handler
+  const handleSaveBankConfig = async (e) => {
+    e.preventDefault();
+    setBankErrorMsg(null);
+
+    const acc = (bankConfig.bank_account_number || '').trim();
+    const confirmAcc = (bankConfig.bank_account_confirm || '').trim();
+    const ifsc = (bankConfig.bank_ifsc || '').trim().toUpperCase();
+
+    if (!acc || acc.length < 8) {
+      const err = 'Bank Account Number must be at least 8 digits.';
+      setBankErrorMsg(err);
+      showToast(err, 'error');
+      return;
+    }
+    if (acc !== confirmAcc) {
+      const err = 'Bank Account Numbers do not match! Please check confirmation.';
+      setBankErrorMsg(err);
+      showToast(err, 'error');
+      return;
+    }
+    if (!ifsc || ifsc.length !== 11) {
+      const err = 'IFSC Code must be exactly 11 characters (e.g. HDFC0001234).';
+      setBankErrorMsg(err);
+      showToast(err, 'error');
+      return;
+    }
+
+    setIsSavingBank(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/merchant/bank-settlement`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          bank_beneficiary_name: bankConfig.bank_beneficiary_name || merchantProfile?.business_name || '',
+          bank_account_number: acc,
+          bank_ifsc: ifsc,
+          bank_name: bankConfig.bank_name,
+          upi_id: bankConfig.upi_id,
+          pan_number: bankConfig.pan_number
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        showToast('Bank Settlement Account configured successfully! Direct payouts active.', 'success');
+        setBankErrorMsg(null);
+        setIsEditingBank(false);
+        fetchData();
+      } else {
+        const err = await res.json();
+        const msg = err.detail || 'Failed to save bank details.';
+        setBankErrorMsg(msg);
+        showToast(msg, 'error');
+      }
+    } catch (err) {
+      const msg = 'Network error saving bank settlement details.';
+      setBankErrorMsg(msg);
+      showToast(msg, 'error');
+    } finally {
+      setIsSavingBank(false);
+    }
+  };
+
   // Guardrail save handler
   const handleSaveGuardrails = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/guardrails`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(guardrails)
       });
       if (res.ok) {
@@ -534,8 +748,30 @@ export default function App() {
     return <span style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '0.75rem', fontWeight: '600', backgroundColor: 'rgba(107, 114, 128, 0.15)', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}>UNPAID</span>;
   };
 
+  // 0. Loading State
+  if (isAuthChecking) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-main)' }}>
+        <div style={{ textAlign: 'center', color: 'var(--primary)', fontWeight: '600', fontSize: '1rem' }}>
+          ⚡ Loading Merchant Workspace...
+        </div>
+      </div>
+    );
+  }
+
+  // 1. Unauthenticated View (Merchant Login / Sign Up)
+  if (!merchantSession) {
+    return (
+      <>
+        <ToastContainer toasts={toasts} removeToast={removeToast} />
+        <AuthView onAuthSuccess={setMerchantSession} showToast={showToast} />
+      </>
+    );
+  }
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
       
       {/* Top Navbar */}
       <header style={{ height: '70px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-card)', backdropFilter: 'blur(12px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 32px', position: 'sticky', top: 0, zIndex: 100 }}>
@@ -555,29 +791,126 @@ export default function App() {
         {/* Tab Buttons */}
         <div style={{ display: 'flex', gap: '8px', background: 'var(--bg-dark)', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
           <button
-            onClick={() => setActiveTab('dashboard')}
-            style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', transition: 'all 0.2s', background: activeTab === 'dashboard' ? 'var(--text-main)' : 'transparent', color: activeTab === 'dashboard' ? '#FFF' : 'var(--text-muted)' }}
+            onClick={() => {
+              if (!isBankSetupComplete) {
+                showToast('⚠️ Setup Required: Please configure your bank account for 99% direct settlements first!', 'error');
+                setActiveTab('settlement');
+              } else {
+                setActiveTab('dashboard');
+              }
+            }}
+            style={{
+              padding: '8px 18px',
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              fontWeight: '600',
+              transition: 'all 0.2s',
+              background: activeTab === 'dashboard' ? 'var(--text-main)' : 'transparent',
+              color: activeTab === 'dashboard' ? '#FFF' : 'var(--text-muted)',
+              opacity: !isBankSetupComplete ? 0.6 : 1
+            }}
           >
-            📊 Invoices & Analytics
+            {!isBankSetupComplete ? '🔒 Invoices & Analytics' : '📊 Invoices & Analytics'}
           </button>
+
           <button
-            onClick={() => setActiveTab('guardrails')}
-            style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', transition: 'all 0.2s', background: activeTab === 'guardrails' ? 'var(--text-main)' : 'transparent', color: activeTab === 'guardrails' ? '#FFF' : 'var(--text-muted)' }}
+            onClick={() => {
+              if (!isBankSetupComplete) {
+                showToast('⚠️ Setup Required: Please configure your bank account for 99% direct settlements first!', 'error');
+                setActiveTab('settlement');
+              } else {
+                setActiveTab('guardrails');
+              }
+            }}
+            style={{
+              padding: '8px 18px',
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              fontWeight: '600',
+              transition: 'all 0.2s',
+              background: activeTab === 'guardrails' ? 'var(--text-main)' : 'transparent',
+              color: activeTab === 'guardrails' ? '#FFF' : 'var(--text-muted)',
+              opacity: !isBankSetupComplete ? 0.6 : 1
+            }}
           >
-            🛡️ Guardrail Policies
+            {!isBankSetupComplete ? '🔒 Guardrail Policies' : '🛡️ Guardrail Policies'}
           </button>
+
+          {/* WhatsApp Simulator: Displayed ONLY for Test Accounts */}
+          {isTestAccount && (
+            <button
+              onClick={() => setActiveTab('simulator')}
+              style={{
+                padding: '8px 18px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: '600',
+                transition: 'all 0.2s',
+                background: activeTab === 'simulator' ? 'var(--text-main)' : 'transparent',
+                color: activeTab === 'simulator' ? '#FFF' : 'var(--text-muted)'
+              }}
+            >
+              💬 WhatsApp Simulator (Test Mode)
+            </button>
+          )}
+
           <button
-            onClick={() => setActiveTab('simulator')}
-            style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', transition: 'all 0.2s', background: activeTab === 'simulator' ? 'var(--text-main)' : 'transparent', color: activeTab === 'simulator' ? '#FFF' : 'var(--text-muted)' }}
+            onClick={() => setActiveTab('settlement')}
+            style={{
+              padding: '8px 18px',
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              fontWeight: '600',
+              transition: 'all 0.2s',
+              background: activeTab === 'settlement' ? 'var(--text-main)' : 'transparent',
+              color: activeTab === 'settlement' ? '#FFF' : 'var(--text-muted)',
+              position: 'relative'
+            }}
           >
-            💬 WhatsApp Simulator & Audit Trace
+            🏦 Bank & Settlement {!isBankSetupComplete && <span style={{ color: 'var(--danger)', fontWeight: 'bold' }}>*</span>}
           </button>
         </div>
 
-        {/* SSE Connection Status Indicator */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', color: sseConnected ? 'var(--success)' : 'var(--text-dim)' }}>
-          <div className="live-indicator" style={{ backgroundColor: sseConnected ? 'var(--success)' : 'var(--text-dim)' }}></div>
-          <span>{sseConnected ? 'Real-Time SSE Connected' : 'Disconnected'}</span>
+        {/* Merchant Workspace & SSE Indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: sseConnected ? 'var(--success)' : 'var(--text-dim)' }}>
+            <div className="live-indicator" style={{ backgroundColor: sseConnected ? 'var(--success)' : 'var(--text-dim)' }}></div>
+            <span>{sseConnected ? 'Live SSE' : 'Offline'}</span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 12px', background: 'var(--bg-dark)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.82rem', color: 'var(--text-main)' }}>
+            <span>🏢</span>
+            <strong>{merchantProfile?.business_name || merchantSession?.user?.user_metadata?.business_name || 'Merchant Organization'}</strong>
+          </div>
+
+          <button
+            onClick={async () => {
+              await supabase.auth.signOut();
+              setMerchantSession(null);
+              showToast('Signed out of Merchant Portal.', 'info');
+            }}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              background: '#FFFFFF',
+              color: 'var(--danger)',
+              fontSize: '0.78rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            Sign Out
+          </button>
         </div>
       </header>
 
@@ -832,6 +1165,517 @@ export default function App() {
 
               </div>
             </div>
+          </div>
+        )}
+
+        {/* TAB 4: BANK & SETTLEMENT ACCOUNT CONFIGURATION */}
+        {activeTab === 'settlement' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            
+            {/* Mandatory Setup Banner if incomplete */}
+            {!isBankSetupComplete && (
+              <div style={{
+                padding: '16px 20px',
+                borderRadius: '12px',
+                background: '#FEF2F2',
+                border: '1px solid #FCA5A5',
+                color: '#991B1B',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                boxShadow: '0 4px 12px rgba(239, 68, 68, 0.08)'
+              }}>
+                <span style={{ fontSize: '1.4rem' }}>⚠️</span>
+                <div>
+                  <strong style={{ fontSize: '0.95rem' }}>Mandatory Bank Account Setup:</strong>
+                  <div style={{ fontSize: '0.82rem', marginTop: '2px' }}>
+                    You must link your official bank account to enable invoice recovery, customer payment links, and 99% automated direct payouts.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Header Title */}
+            <div>
+              <h2 style={{ fontSize: '1.4rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '4px' }}>
+                Bank & Direct Settlement Settings
+              </h2>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                Configure your verified bank account to receive 99% automated payouts when customers pay invoices via WhatsApp.
+              </p>
+            </div>
+
+            {/* Platform Monetization & Payout Split Overview */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px' }}>
+              <div className="glass-panel" style={{ padding: '20px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Merchant Payout Share</p>
+                <h3 style={{ fontSize: '1.8rem', fontWeight: '700', color: 'var(--success)' }}>{bankConfig.settlement_payout_pct || 99.0}%</h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--success)', marginTop: '6px' }}>Direct Bank Deposit</p>
+              </div>
+
+              <div className="glass-panel" style={{ padding: '20px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Platform Recovery Cut</p>
+                <h3 style={{ fontSize: '1.8rem', fontWeight: '700', color: 'var(--primary)' }}>{bankConfig.commission_pct || 1.0}%</h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>Automated Take-Rate</p>
+              </div>
+
+              <div className="glass-panel" style={{ padding: '20px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Settlement Cycle</p>
+                <h3 style={{ fontSize: '1.4rem', fontWeight: '700', color: 'var(--text-main)' }}>T+1 Days</h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>Next Business Day NEFT/IMPS</p>
+              </div>
+
+              <div className="glass-panel" style={{ padding: '20px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Gateway Status</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+                  <div className="live-indicator" style={{ backgroundColor: 'var(--success)' }}></div>
+                  <span style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--success)' }}>Active (Route)</span>
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '8px' }}>Master Razorpay Escrow</p>
+              </div>
+            </div>
+
+            {/* Full-Width Grid: Form + Architecture & Payout Guidelines */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '24px', alignItems: 'start' }}>
+              
+              {/* Left Column: Bank Configuration Form (with Edit/Readonly & Inline Error) */}
+              <div className="glass-panel" style={{ padding: '32px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ width: '42px', height: '42px', borderRadius: '10px', background: isBankSetupComplete && !isEditingBank ? 'var(--success)' : 'var(--primary)', color: '#FFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.3rem' }}>
+                      {isBankSetupComplete && !isEditingBank ? '✓' : '🏦'}
+                    </div>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                          Beneficiary Bank Account Details
+                        </h3>
+                        {isBankSetupComplete && !isEditingBank && (
+                          <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '12px', background: 'var(--success-bg)', color: 'var(--success)', border: '1px solid var(--success)', fontWeight: '600' }}>
+                            Verified & Active
+                          </span>
+                        )}
+                      </div>
+                      <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                        Recovered customer funds (99% net payout) will be deposited directly to this account.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Top Edit Button if already saved & in read-only mode */}
+                  {isBankSetupComplete && !isEditingBank && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingBank(true);
+                        setBankErrorMsg(null);
+                      }}
+                      style={{
+                        padding: '8px 16px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        background: '#FFF',
+                        color: 'var(--text-main)',
+                        fontWeight: '600',
+                        fontSize: '0.85rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.04)'
+                      }}
+                    >
+                      <span>✏️</span> Edit Details
+                    </button>
+                  )}
+                </div>
+
+                <form onSubmit={handleSaveBankConfig} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                      Account Holder / Legal Entity Name *
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Vanssh Limited / Apex Logistics"
+                      value={bankConfig.bank_beneficiary_name || ''}
+                      onChange={(e) => {
+                        setBankConfig({ ...bankConfig, bank_beneficiary_name: e.target.value });
+                        if (bankErrorMsg) setBankErrorMsg(null);
+                      }}
+                      disabled={isBankSetupComplete && !isEditingBank}
+                      style={{
+                        width: '100%',
+                        padding: '12px 14px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                        color: 'var(--text-main)',
+                        fontSize: '0.9rem',
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                        cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                      }}
+                      required
+                    />
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '4px' }}>
+                      Must exactly match your legal name registered with the bank.
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                        Bank Account Number *
+                      </label>
+                      <input
+                        type={isBankSetupComplete && !isEditingBank ? 'text' : 'password'}
+                        placeholder="Enter account number"
+                        value={isBankSetupComplete && !isEditingBank ? (bankConfig.bank_account_masked || '••••••••' + (bankConfig.bank_account_number || '').slice(-4)) : (bankConfig.bank_account_number || '')}
+                        onChange={(e) => {
+                          setBankConfig({ ...bankConfig, bank_account_number: e.target.value });
+                          if (bankErrorMsg) setBankErrorMsg(null);
+                        }}
+                        disabled={isBankSetupComplete && !isEditingBank}
+                        style={{
+                          width: '100%',
+                          padding: '12px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.9rem',
+                          fontFamily: isBankSetupComplete && !isEditingBank ? 'monospace' : 'inherit',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                        }}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                        Confirm Bank Account Number *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Re-enter account number"
+                        value={isBankSetupComplete && !isEditingBank ? (bankConfig.bank_account_masked || '••••••••' + (bankConfig.bank_account_number || '').slice(-4)) : (bankConfig.bank_account_confirm || '')}
+                        onChange={(e) => {
+                          setBankConfig({ ...bankConfig, bank_account_confirm: e.target.value });
+                          if (bankErrorMsg) setBankErrorMsg(null);
+                        }}
+                        disabled={isBankSetupComplete && !isEditingBank}
+                        style={{
+                          width: '100%',
+                          padding: '12px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.9rem',
+                          fontFamily: isBankSetupComplete && !isEditingBank ? 'monospace' : 'inherit',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                        }}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                        Bank IFSC Code *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. HDFC0001234"
+                        value={bankConfig.bank_ifsc || ''}
+                        onChange={(e) => {
+                          setBankConfig({ ...bankConfig, bank_ifsc: e.target.value.toUpperCase() });
+                          if (bankErrorMsg) setBankErrorMsg(null);
+                        }}
+                        disabled={isBankSetupComplete && !isEditingBank}
+                        maxLength={11}
+                        style={{
+                          width: '100%',
+                          padding: '12px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.9rem',
+                          fontFamily: 'monospace',
+                          textTransform: 'uppercase',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                        }}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                        Bank Name & Branch
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. HDFC Bank, Connaught Place"
+                        value={bankConfig.bank_name || ''}
+                        onChange={(e) => {
+                          setBankConfig({ ...bankConfig, bank_name: e.target.value });
+                          if (bankErrorMsg) setBankErrorMsg(null);
+                        }}
+                        disabled={isBankSetupComplete && !isEditingBank}
+                        style={{
+                          width: '100%',
+                          padding: '12px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.9rem',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                        Primary UPI ID / VPA
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. business@okaxis"
+                        value={bankConfig.upi_id || ''}
+                        onChange={(e) => {
+                          setBankConfig({ ...bankConfig, upi_id: e.target.value });
+                          if (bankErrorMsg) setBankErrorMsg(null);
+                        }}
+                        disabled={isBankSetupComplete && !isEditingBank}
+                        style={{
+                          width: '100%',
+                          padding: '12px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.9rem',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '8px' }}>
+                        Business PAN / GSTIN
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. ABCDE1234F"
+                        value={bankConfig.pan_number || ''}
+                        onChange={(e) => {
+                          setBankConfig({ ...bankConfig, pan_number: e.target.value.toUpperCase() });
+                          if (bankErrorMsg) setBankErrorMsg(null);
+                        }}
+                        disabled={isBankSetupComplete && !isEditingBank}
+                        style={{
+                          width: '100%',
+                          padding: '12px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: isBankSetupComplete && !isEditingBank ? '#FAFAF9' : 'var(--bg-dark)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.9rem',
+                          fontFamily: 'monospace',
+                          textTransform: 'uppercase',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          cursor: isBankSetupComplete && !isEditingBank ? 'default' : 'text'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Security Notice */}
+                  <div style={{ padding: '14px 18px', borderRadius: '10px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', color: 'var(--success)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span>🔒</span>
+                    <div>
+                      <strong>Direct Nodal Protection:</strong> Bank details are stored with AES-256 encryption. Payouts are reconciled via Razorpay Route.
+                    </div>
+                  </div>
+
+                  {/* Bottom Action Bar: Left Error Box + Right Action Buttons */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginTop: '10px',
+                    gap: '16px'
+                  }}>
+                    {/* Left Space: Prominent Inline Validation Error Display */}
+                    <div style={{ flex: 1, minHeight: '32px', display: 'flex', alignItems: 'center' }}>
+                      {bankErrorMsg ? (
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '8px 14px',
+                          borderRadius: '8px',
+                          background: '#FEF2F2',
+                          border: '1px solid #FCA5A5',
+                          color: '#B91C1C',
+                          fontSize: '0.85rem',
+                          fontWeight: '600'
+                        }}>
+                          <span>⚠️</span>
+                          <span>{bankErrorMsg}</span>
+                        </div>
+                      ) : isBankSetupComplete && !isEditingBank ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--success)', fontSize: '0.85rem', fontWeight: '500' }}>
+                          <span>✓</span> All payouts configured for direct settlement.
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {/* Right Action Buttons */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      {isEditingBank && isBankSetupComplete && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingBank(false);
+                            setBankErrorMsg(null);
+                          }}
+                          style={{
+                            padding: '12px 20px',
+                            borderRadius: '8px',
+                            border: '1px solid var(--border-color)',
+                            background: '#FFF',
+                            color: 'var(--text-muted)',
+                            fontWeight: '600',
+                            fontSize: '0.9rem',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      )}
+
+                      {(!isBankSetupComplete || isEditingBank) ? (
+                        <button
+                          type="submit"
+                          disabled={isSavingBank}
+                          style={{
+                            padding: '12px 28px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            background: 'var(--text-main)',
+                            color: '#FFF',
+                            fontWeight: '600',
+                            fontSize: '0.9rem',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            opacity: isSavingBank ? 0.7 : 1,
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {isSavingBank ? 'Saving Account...' : isBankSetupComplete ? '💾 Update Settlement Account' : '💾 Save Settlement Account'}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingBank(true);
+                            setBankErrorMsg(null);
+                          }}
+                          style={{
+                            padding: '12px 24px',
+                            borderRadius: '8px',
+                            border: '1px solid var(--border-color)',
+                            background: '#FFF',
+                            color: 'var(--text-main)',
+                            fontWeight: '600',
+                            fontSize: '0.9rem',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.04)'
+                          }}
+                        >
+                          <span>✏️</span> Edit Settlement Account
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                </form>
+              </div>
+
+              {/* Right Column: Settlement Architecture & Benefits Cards */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                
+                <div className="glass-panel" style={{ padding: '24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                    <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(0, 102, 255, 0.1)', color: '#0066FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>
+                      ⚡
+                    </div>
+                    <h4 style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                      How Payouts Work
+                    </h4>
+                  </div>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '0.84rem', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)' }}>1.</span>
+                      <span>Customer pays an overdue invoice via Razorpay payment links over WhatsApp.</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)' }}>2.</span>
+                      <span>Resolve.ai automatically deducts the <strong>1.0%</strong> platform recovery take-rate.</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)' }}>3.</span>
+                      <span>The remaining <strong>99.0%</strong> is auto-deposited directly to your verified bank account via T+1 settlement.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="glass-panel" style={{ padding: '24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                    <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(55, 139, 89, 0.1)', color: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>
+                      🛡️
+                    </div>
+                    <h4 style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                      Fintech Security & Compliance
+                    </h4>
+                  </div>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                    All transfers are routed through RBI-compliant nodal settlement accounts. Your bank credentials are encrypted and never exposed to customers.
+                  </p>
+                  
+                  <div style={{ marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>Connected Gateway:</span>
+                    <span style={{ fontSize: '0.78rem', fontWeight: '600', color: '#0066FF' }}>Razorpay Route v1</span>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
           </div>
         )}
 
@@ -1568,28 +2412,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* Toast Notification Container */}
-      {toast && (
-        <div style={{
-          position: 'fixed',
-          bottom: '24px',
-          right: '24px',
-          zIndex: 2000,
-          padding: '12px 20px',
-          borderRadius: '10px',
-          background: toast.type === 'success' ? '#10B981' : toast.type === 'error' ? '#EF4444' : 'var(--text-main)',
-          color: '#FFFFFF',
-          fontSize: '0.88rem',
-          fontWeight: '500',
-          boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          transition: 'all 0.3s ease'
-        }}>
-          {toast.type === 'success' ? '✅' : toast.type === 'error' ? '⚠️' : 'ℹ️'} {toast.message}
-        </div>
-      )}
+
     </div>
   );
 }
