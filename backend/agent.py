@@ -35,9 +35,13 @@ TOOLS_DECLARATION = [
                         "extension_days": {
                             "type": "INTEGER",
                             "description": "The requested due date extension in days (numeric int, e.g. 7, 14)."
+                        },
+                        "invoice_scope": {
+                            "type": "STRING",
+                            "description": "The specific invoice_id (e.g., 'inv_SME_005') they are paying, OR the word 'ALL' if they are making an account-level payment towards their total balance."
                         }
                     },
-                    "required": ["proposed_amount_inr", "extension_days"]
+                    "required": ["proposed_amount_inr", "extension_days", "invoice_scope"]
                 }
             },
             {
@@ -141,7 +145,9 @@ HUMAN CONVERSATION GUIDELINES:
 3. If the customer asks "how many bills are pending?", "how much money do I owe totally?", "do I have other invoices?", provide their complete account summary showing total remaining balance across all bills.
 4. If the customer asks about past payments ("how much did I pay?", "show payment history", "did my payment go through?"), reference their exact past transactions above with dates, amounts, and payment methods.
 5. If the customer asks to view or receive their invoice bill (e.g. "send me the invoice", "give me the bill", "send bill", "show invoice"), check if an official document link exists above. If a document CDN link exists, state warmly "Here is your official invoice document below:". If NO document CDN link is present for that invoice, inform them politely: "We do not have a PDF document attached for this invoice at this time, but your remaining balance is ₹" followed by their exact balance.
-6. If the customer makes ANY payment proposal (e.g. "I can pay 40%", "give me 10 days", "I can pay 15,000 next week"), you MUST invoke the 'propose_settlement_payment' tool.
+6. If the customer makes ANY payment proposal (e.g. "I can pay 40%", "give me 10 days", "I can pay 15,000 next week"):
+   - If they have MULTIPLE pending invoices, you MUST ask them to clarify which specific bill they want to apply it to, or if they want to pay towards their total account balance. Do not call 'propose_settlement_payment' until they specify.
+   - If they specify a bill, or they only have 1 bill, or they want to pay their total balance, you MUST invoke the 'propose_settlement_payment' tool with the correct 'invoice_scope'.
 7. Keep responses concise, warm, and end with a helpful question.
 """
             }]
@@ -215,7 +221,7 @@ HUMAN CONVERSATION GUIDELINES:
             system_instruction = self._build_system_instruction(invoice, guardrails)
             contents = self._build_gemini_contents(session.messages)
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
             payload = {
                 "systemInstruction": system_instruction,
                 "contents": contents,
@@ -261,28 +267,40 @@ HUMAN CONVERSATION GUIDELINES:
                             elif fn_name == "propose_settlement_payment":
                                 proposed_amount_inr = float(fn_args.get("proposed_amount_inr", 0))
                                 extension_days = int(fn_args.get("extension_days", guardrails.max_extension_days))
+                                invoice_scope = fn_args.get("invoice_scope", invoice_id)
 
                                 guardrail_passed, reason, guardrail_meta = self.guardrail_engine.validate_proposal(
-                                    invoice_id=invoice_id,
+                                    invoice_id=invoice_scope,
                                     proposed_amount_inr=proposed_amount_inr,
-                                    extension_days=extension_days
+                                    extension_days=extension_days,
+                                    customer_phone=invoice.customer_phone
                                 )
 
                                 if guardrail_passed:
                                     approved_amount_inr = guardrail_meta["approved_amount_inr"]
                                     approved_extension = guardrail_meta["approved_extension_days"]
 
-                                    ref_id = f"ref_{session_id[:16]}_t{len(session.messages)}"
+                                    if invoice_scope == "ALL":
+                                        ref_id = f"account_settlement_{invoice.customer_phone}_{len(session.messages)}"
+                                        desc = f"Account Settlement for {invoice.customer_phone}"
+                                    else:
+                                        ref_id = f"ref_{session_id[:16]}_t{len(session.messages)}"
+                                        desc = f"Settlement for Invoice {invoice_scope}"
+
                                     effective_days = min(approved_extension, 180)
                                     expiry_timestamp = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=effective_days)).replace(hour=23, minute=59, second=59).timestamp())
 
+                                    # Convert INR to paise for Razorpay
+                                    amount_in_paise = int(round(approved_amount_inr * 100))
                                     link_res = razorpay_client.create_payment_link(
-                                        invoice_id=invoice.invoice_id,
-                                        customer_name=invoice.customer_name,
-                                        customer_phone=invoice.customer_phone,
-                                        amount_inr=approved_amount_inr,
-                                        description=f"Settlement for Invoice {invoice.invoice_id}",
-                                        expire_by_timestamp=expiry_timestamp,
+                                        amount_in_paise=amount_in_paise,
+                                        description=desc,
+                                        customer_info={
+                                            "name": invoice.customer_name,
+                                            "phone": invoice.customer_phone,
+                                            "invoice_id": invoice_scope
+                                        },
+                                        expiry_timestamp=expiry_timestamp,
                                         reference_id=ref_id
                                     )
 
@@ -386,14 +404,6 @@ HUMAN CONVERSATION GUIDELINES:
             except Exception as e:
                 print(f"[Gemini Agent Error]: {e}")
 
-            # Fallback text if LLM call failed completely
-            if not resp_text:
-                resp_text = (
-                    f"Hello {invoice.customer_name}! Your invoice '{invoice.invoice_id}' has a balance of "
-                    f"₹{invoice.remaining_amount_inr:,.2f} (Due: {invoice.due_date}). "
-                    f"How can I assist you with your payment today?"
-                )
-
             # Check if customer asked for invoice document or if media documents should be attached
             media_documents = []
             doc_keywords = ["invoice", "bill", "pdf", "receipt", "document", "send me", "show me"]
@@ -406,6 +416,18 @@ HUMAN CONVERSATION GUIDELINES:
                             "filename": f"{item['invoice_id']}_bill.pdf",
                             "url": item["document_url"]
                         })
+
+            # If Gemini returned empty text or fallback is needed:
+            if not resp_text:
+                if media_documents:
+                    resp_text = f"Here are your official invoice documents for your review below. Please let me know if you would like to proceed with payment or discuss a settlement:"
+                else:
+                    resp_text = (
+                        f"Hello {invoice.customer_name}! Your invoice '{invoice.invoice_id}' has a balance of "
+                        f"₹{invoice.remaining_amount_inr:,.2f} (Due: {invoice.due_date}). "
+                        f"How can I assist you with your payment today?"
+                    )
+
 
             # Record Agent Response
             self.session_manager.add_message(

@@ -188,13 +188,7 @@ def process_whatsapp_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
 async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Asynchronous Payment Reconciler for Razorpay Webhooks.
-    Executes strictly inside an invoice row lock to prevent race conditions.
-    Enforces 5 Invariants:
-    1. Raw HMAC verification (performed prior to calling reconciler).
-    2. Invoice Row Mutex Lock (async with lock:).
-    3. UNIQUE(razorpay_payment_id) Idempotency check.
-    4. Exact Integer Paise Balance Math: new_remaining = max(0, original - new_paid).
-    5. FSM State Transition & Superseded Payment Link Cancellation.
+    Supports BOTH Invoice-Level and Account-Level (FIFO) Multi-Bill Payments.
     """
     event = payload.get("event", "")
     payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
@@ -210,12 +204,12 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
     payment_method = payment_entity.get("method", "UPI").upper()
 
-    # Extract invoice_id from notes, description, or payment_links table
     notes = payment_entity.get("notes", {}) or payment_link_entity.get("notes", {})
     invoice_id = notes.get("invoice_id")
+    customer_phone = notes.get("customer_phone")
 
     if not invoice_id and razorpay_payment_link_id:
-        # Query DB for linked invoice_id
+        from backend.database import get_connection
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT invoice_id FROM payment_links WHERE razorpay_payment_link_id = %s;", (razorpay_payment_link_id,))
@@ -225,116 +219,128 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
             invoice_id = row["invoice_id"]
 
     if not invoice_id:
-        # Default fallback match from reference_id or description if present
         ref_id = payment_link_entity.get("reference_id", "")
-        if "_" in ref_id:
-            parts = ref_id.split("_")
-            if len(parts) >= 3:
-                invoice_id = parts[1] if parts[1].startswith("inv_") else (parts[2] if len(parts) > 2 and parts[2].startswith("inv_") else None)
-
-        if not invoice_id:
-            desc = payment_entity.get("description", "") or payment_link_entity.get("description", "")
-            desc_match = re.search(r'(inv_[a-zA-Z0-9_]+)', desc)
-            if desc_match:
-                invoice_id = desc_match.group(1)
+        if "account_settlement" in ref_id:
+            invoice_id = "ALL"
+            parts_ref = ref_id.split("_")
+            if len(parts_ref) >= 3:
+                customer_phone = parts_ref[2]
+        elif "_" in ref_id:
+            parts_ref = ref_id.split("_")
+            if len(parts_ref) >= 3:
+                invoice_id = parts_ref[1] if parts_ref[1].startswith("inv_") else (parts_ref[2] if len(parts_ref) > 2 and parts_ref[2].startswith("inv_") else None)
 
     if not invoice_id or not razorpay_payment_id:
         return {"status": "ignored", "reason": "missing_invoice_id_or_payment_id"}
 
-    # Acquire Async Invoice Row Lock
+    # ==========================================
+    # ACCOUNT LEVEL FIFO DISTRIBUTION (MULTI-BILL)
+    # ==========================================
+    if invoice_id == "ALL":
+        if not customer_phone:
+            return {"status": "error", "reason": "missing_customer_phone_for_account_payment"}
+        
+        lock = get_invoice_lock(f"account_{customer_phone}")
+        async with lock:
+            from backend.database import get_connection
+            from psycopg2.extras import DictCursor
+            from backend.database import get_invoice, upsert_invoice, record_transaction
+            from backend.models import InvoiceStatus
+            from backend.razorpay_client import razorpay_client
+            
+            conn = get_connection()
+            cursor = conn.cursor(cursor_factory=DictCursor)
+            clean_phone = customer_phone.replace(" ", "").replace("-", "")
+            cursor.execute(
+                "SELECT invoice_id FROM master_invoices WHERE REPLACE(REPLACE(customer_phone, ' ', ''), '-', '') = %s AND status != 'PAID' ORDER BY due_date ASC;",
+                (clean_phone,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+
+            remaining_payment_paise = amount_paise
+            distributed_invoices = []
+
+            for r in rows:
+                if remaining_payment_paise <= 0:
+                    break
+                
+                inv_id = r["invoice_id"]
+                invoice = get_invoice(inv_id)
+                if not invoice or invoice.remaining_amount_paise <= 0:
+                    continue
+                
+                unique_rzp_id = f"{razorpay_payment_id}_{inv_id}"
+                amount_to_apply = min(remaining_payment_paise, invoice.remaining_amount_paise)
+                
+                success, is_dup = record_transaction(
+                    invoice_id=inv_id,
+                    razorpay_payment_id=unique_rzp_id,
+                    razorpay_payment_link_id=razorpay_payment_link_id,
+                    amount_paid_paise=amount_to_apply,
+                    payment_method=payment_method
+                )
+                if is_dup:
+                    continue
+                
+                new_paid = invoice.paid_amount_paise + amount_to_apply
+                new_rem = invoice.original_amount_paise - new_paid
+                target_status = InvoiceStatus.PAID if new_rem == 0 else InvoiceStatus.PARTIALLY_PAID
+                
+                invoice.paid_amount_paise = new_paid
+                invoice.remaining_amount_paise = new_rem
+                invoice.status = target_status
+                upsert_invoice(invoice)
+                
+                distributed_invoices.append({"invoice_id": inv_id, "amount_applied": amount_to_apply, "status": target_status.value})
+                remaining_payment_paise -= amount_to_apply
+
+            if razorpay_payment_link_id:
+                try:
+                    razorpay_client.cancel_payment_link(razorpay_payment_link_id)
+                except Exception:
+                    pass
+
+            return {"status": "success", "type": "account_level", "distributed": distributed_invoices, "unallocated_paise": remaining_payment_paise}
+
+
+    # ==========================================
+    # SINGLE INVOICE LEVEL LOGIC (LEGACY)
+    # ==========================================
     lock = get_invoice_lock(invoice_id)
     async with lock:
+        from backend.database import get_invoice, upsert_invoice, record_transaction
+        from backend.models import InvoiceStatus
+        from backend.razorpay_client import razorpay_client
+        
         invoice = get_invoice(invoice_id)
         if not invoice:
             return {"status": "error", "reason": f"Invoice '{invoice_id}' not found"}
 
-        # 1. Idempotency Check via TransactionLedger
         success, is_duplicate = record_transaction(
             invoice_id=invoice_id,
             razorpay_payment_id=razorpay_payment_id,
             razorpay_payment_link_id=razorpay_payment_link_id,
             amount_paid_paise=amount_paise,
-            payment_method=payment_method,
-
+            payment_method=payment_method
         )
 
         if is_duplicate:
             return {"status": "ignored", "reason": "duplicate_payment_id", "razorpay_payment_id": razorpay_payment_id}
 
-        # 2. Execute Balance Math Strictly Inside Row Lock
         new_paid_paise = invoice.paid_amount_paise + amount_paise
         new_remaining_paise = max(0, invoice.original_amount_paise - new_paid_paise)
-
-        # 3. Determine FSM Status
         target_status = InvoiceStatus.PAID if new_remaining_paise == 0 else InvoiceStatus.PARTIALLY_PAID
-
-        # 4. Enforce FSM Transition Invariant
-        validate_fsm_transition(invoice.status.value, target_status.value)
-
-        # 5. Persist Invoice Updates
+        
         invoice.paid_amount_paise = new_paid_paise
         invoice.remaining_amount_paise = new_remaining_paise
         invoice.status = target_status
         upsert_invoice(invoice)
 
-        # 6. Deactivate Superseded Payment Links
         if razorpay_payment_link_id:
             try:
                 razorpay_client.cancel_payment_link(razorpay_payment_link_id)
             except Exception:
-                pass  # Ignore mock / API cancel errors gracefully
+                pass
 
-        # 7. Append Automated Payment Confirmation Message to ChatSession
-        session_id = f"{invoice.customer_phone}_{invoice_id}"
-        amount_inr = paise_to_inr(amount_paise)
-        remaining_inr = paise_to_inr(new_remaining_paise)
-
-        if target_status == InvoiceStatus.PAID:
-            conf_text = (
-                f"🎉 Payment Confirmed! We received your payment of ₹{amount_inr:,.2f} (Payment ID: {razorpay_payment_id}). "
-                f"Your invoice '{invoice_id}' is now FULLY PAID! Thank you for clearing your balance."
-            )
-        else:
-            conf_text = (
-                f"✅ Payment Received! We confirmed your payment of ₹{amount_inr:,.2f} (Payment ID: {razorpay_payment_id}). "
-                f"Your new remaining balance is ₹{remaining_inr:,.2f}."
-            )
-
-        conf_msg_obj = None
-        try:
-            conf_msg_obj = session_manager.add_message(
-                session_id=session_id,
-                sender="agent",
-                text=conf_text,
-                metadata={
-                    "payment_confirmation": True,
-                    "razorpay_payment_id": razorpay_payment_id,
-                    "amount_paid_inr": amount_inr,
-                    "remaining_inr": remaining_inr
-                }
-            )
-        except Exception:
-            pass
-
-        # Send WhatsApp text message confirmation to customer's phone if Meta WhatsApp integration is active
-        try:
-            whatsapp_client.send_text_message(invoice.customer_phone, conf_text)
-        except Exception:
-            pass
-
-        return {
-            "status": "reconciled",
-            "invoice_id": invoice_id,
-            "session_id": session_id,
-            "razorpay_payment_id": razorpay_payment_id,
-            "amount_paid_paise": amount_paise,
-            "new_remaining_paise": new_remaining_paise,
-            "new_status": target_status.value,
-            "confirmation_message": conf_text,
-            "confirmation_msg_obj": {
-                "sender": "agent",
-                "text": conf_text,
-                "timestamp": conf_msg_obj.timestamp if conf_msg_obj else datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "metadata": {"payment_confirmation": True}
-            } if conf_msg_obj else None
-        }
+        return {"status": "success", "invoice_id": invoice_id, "new_status": invoice.status.value}

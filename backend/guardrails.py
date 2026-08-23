@@ -25,7 +25,8 @@ class GuardrailEngine:
         self,
         invoice_id: str,
         proposed_amount_inr: float,
-        extension_days: int
+        extension_days: int,
+        customer_phone: str = None
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Deterministically evaluates a client negotiation proposal against merchant guardrails and platform bounds.
@@ -39,19 +40,27 @@ class GuardrailEngine:
         Returns: (is_valid: bool, reason: str, counter_offer: dict)
         """
         guardrails = get_guardrails()
-        invoice = get_invoice(invoice_id)
-
-        if not invoice:
-            return (False, f"Invoice '{invoice_id}' not found.", {})
-
-        if invoice.remaining_amount_paise <= 0:
-            return (False, f"Invoice '{invoice_id}' is already fully paid or settled.", {})
+        if invoice_id == "ALL":
+            if not customer_phone:
+                return (False, "Customer phone required for account-level payments.", {})
+            from backend.database import get_customer_financial_profile
+            prof = get_customer_financial_profile(customer_phone)
+            remaining_paise = prof["total_remaining_balance_paise"]
+            if remaining_paise <= 0:
+                return (False, "Account is fully settled.", {})
+        else:
+            invoice = get_invoice(invoice_id)
+            if not invoice:
+                return (False, f"Invoice '{invoice_id}' not found.", {})
+            remaining_paise = invoice.remaining_amount_paise
+            if remaining_paise <= 0:
+                return (False, f"Invoice '{invoice_id}' is already fully paid or settled.", {})
 
         # 1. Currency Conversion
         proposed_amount_paise = inr_to_paise(proposed_amount_inr)
 
         # 2. Lower Floor Bound Calculation
-        min_required_paise = int(round(invoice.remaining_amount_paise * (guardrails.min_partial_payment_pct / 100.0)))
+        min_required_paise = int(round(remaining_paise * (guardrails.min_partial_payment_pct / 100.0)))
 
         # 3. Razorpay Platform Expiry Cap (Max 180 Days / 6 Months)
         effective_max_extension = min(guardrails.max_extension_days, 180)

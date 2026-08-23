@@ -875,19 +875,58 @@ export default function App() {
                     >
                       {(() => {
                         // Extract any Supabase or PDF URL from message text to display clean PDF Document Card
-                        const urlMatch = msg.text.match(/(https?:\/\/[^\s]+)/i);
-                        let cleanText = msg.text;
+                        const urlMatch = msg.text ? msg.text.match(/(https?:\/\/[^\s]+)/i) : null;
+                        let cleanText = msg.text || '';
                         let attachedUrl = null;
 
-                        if (urlMatch) {
+                        if (urlMatch && !urlMatch[0].includes('rzp.io')) {
                           attachedUrl = urlMatch[0];
                           cleanText = msg.text.replace(attachedUrl, '').trim();
                         }
 
+                        const mediaDocs = msg.metadata?.media_documents || [];
+
                         return (
                           <>
                             <div>{cleanText || msg.text}</div>
-                            {attachedUrl && (
+
+                            {/* Render explicit media_documents attached by the Agent */}
+                            {mediaDocs.length > 0 && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+                                {mediaDocs.map((doc, dIdx) => (
+                                  <div key={dIdx} style={{ padding: '10px 12px', background: '#F8F9FA', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                      <span style={{ fontSize: '1.4rem' }}>📄</span>
+                                      <div>
+                                        <div style={{ fontWeight: '600', fontSize: '0.82rem', color: 'var(--text-main)' }}>
+                                          {doc.filename || `${doc.invoice_id}_bill.pdf`}
+                                        </div>
+                                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Official Invoice PDF</div>
+                                      </div>
+                                    </div>
+                                    <a
+                                      href={doc.url?.startsWith('http') ? doc.url : `${API_BASE}${doc.url}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      style={{
+                                        padding: '5px 12px',
+                                        borderRadius: '6px',
+                                        background: 'var(--primary)',
+                                        color: '#FFF',
+                                        fontSize: '0.75rem',
+                                        fontWeight: '600',
+                                        textDecoration: 'none'
+                                      }}
+                                    >
+                                      Open PDF
+                                    </a>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Fallback Single URL attachment */}
+                            {attachedUrl && mediaDocs.length === 0 && (
                               <div style={{ marginTop: '10px', padding: '10px 12px', background: '#F8F9FA', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                   <span style={{ fontSize: '1.4rem' }}>📄</span>

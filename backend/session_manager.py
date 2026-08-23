@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Optional
 import redis.asyncio as redis_async
 from backend.config import settings
 from backend.models import ChatSession, ChatMessage
-from backend.database import get_connection, get_invoice
+from backend.database import get_connection, get_invoice, get_customer_financial_profile
 from backend.guardrails import paise_to_inr
 
 # Redis Client Initialization
