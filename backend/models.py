@@ -31,10 +31,12 @@ class Merchant:
     commission_pct: float = 1.0
     settlement_status: str = "ACTIVE"
     password_hash: Optional[str] = None
+    razorpay_account_id: Optional[str] = None
 
 @dataclass
 class MerchantGuardrails:
     id: int = 1
+    merchant_id: str = 'default_merchant'
     min_partial_payment_pct: float = 30.0
     max_extension_days: int = 14
     max_split_installments: int = 3

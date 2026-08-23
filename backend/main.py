@@ -1,5 +1,5 @@
 import jwt
-from backend.auth import get_current_merchant
+from backend.auth import get_current_merchant, require_verified_merchant_bank
 from backend.models import Merchant
 import time
 import base64
@@ -30,7 +30,9 @@ from backend.database import (
     get_merchant_by_id,
     update_merchant_bank_settlement,
     get_merchant_by_email,
-    create_merchant_with_password
+    create_merchant_with_password,
+    get_merchant_settlement_ledger,
+    update_merchant_razorpay_account
 )
 from backend.guardrails import GuardrailEngine, paise_to_inr, inr_to_paise
 from backend.razorpay_client import razorpay_client
@@ -211,6 +213,13 @@ class BankSettlementUpdateRequest(BaseModel):
     upi_id: Optional[str] = None
     pan_number: Optional[str] = None
 
+
+@app.get("/api/merchant/settlement-ledger")
+async def get_merchant_settlement_ledger_history(merchant: Merchant = Depends(get_current_merchant)):
+    """Returns the authenticated merchant's live double-entry settlement ledger."""
+    ledger = get_merchant_settlement_ledger(merchant.merchant_id)
+    return ledger
+
 @app.get("/api/merchant/bank-settlement")
 async def get_merchant_bank_settlement_config(merchant: Merchant = Depends(get_current_merchant)):
     """Returns the authenticated merchant's configured bank settlement details & 1% platform fee structure."""
@@ -253,6 +262,21 @@ async def save_merchant_bank_settlement_config(req: BankSettlementUpdateRequest,
         upi_id=req.upi_id,
         pan_number=req.pan_number
     )
+    
+    # Automatically provision / link Razorpay Route Linked Account for 99% payouts
+    try:
+        rzp_acc = razorpay_client.create_linked_account(
+            business_name=req.bank_beneficiary_name,
+            email=merchant.email,
+            bank_account=req.bank_account_number,
+            ifsc=req.bank_ifsc,
+            pan=req.pan_number
+        )
+        if rzp_acc.get("id"):
+            update_merchant_razorpay_account(merchant.merchant_id, rzp_acc["id"])
+            print(f"[Razorpay Route Linked Account Ready]: {rzp_acc['id']} for merchant {merchant.merchant_id}")
+    except Exception as e:
+        print(f"[Razorpay Route Account Warning]: {e}")
     
     acc = updated.bank_account_number or ""
     masked_acc = f"••••••••{acc[-4:]}" if len(acc) >= 4 else acc
@@ -1108,21 +1132,32 @@ async def meta_whatsapp_webhook_receiver(request: Request, background_tasks: Bac
 
     return {"status": "ok"}
 
-# --- 6. Analytics & Metrics Endpoint ---
+# --- 6. Analytics & Metrics Endpoint (Merchant-Scoped) ---
 @app.get("/api/analytics")
-async def get_analytics_overview():
-    """Returns key metrics: Total Overdue TPV, Recovered TPV, Recovery Rate %, Active Negotiations."""
+async def get_analytics_overview(merchant: Merchant = Depends(get_current_merchant)):
+    """Returns merchant-scoped key metrics: Total Overdue TPV, Recovered TPV, Recovery Rate %, Active Negotiations."""
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT SUM(original_amount_paise), SUM(paid_amount_paise), SUM(remaining_amount_paise) FROM master_invoices;")
+    cursor.execute("""
+    SELECT 
+        COALESCE(SUM(original_amount_paise), 0),
+        COALESCE(SUM(paid_amount_paise), 0),
+        COALESCE(SUM(remaining_amount_paise), 0)
+    FROM master_invoices
+    WHERE merchant_id = %s;
+    """, (merchant.merchant_id,))
     row = cursor.fetchone()
 
     total_orig = row[0] or 0
     total_paid = row[1] or 0
     total_rem = row[2] or 0
 
-    cursor.execute("SELECT COUNT(*) FROM master_invoices WHERE status = 'NEGOTIATING';")
+    cursor.execute("""
+    SELECT COUNT(*) 
+    FROM master_invoices 
+    WHERE status = 'NEGOTIATING' AND merchant_id = %s;
+    """, (merchant.merchant_id,))
     active_neg_count = cursor.fetchone()[0]
 
     conn.close()
@@ -1133,6 +1168,6 @@ async def get_analytics_overview():
         "total_overdue_tpv_inr": paise_to_inr(total_orig),
         "recovered_tpv_inr": paise_to_inr(total_paid),
         "remaining_overdue_tpv_inr": paise_to_inr(total_rem),
-        "recovery_rate_pct": recovery_rate_pct,
+        "recovery_rate_pct": min(100.0, recovery_rate_pct),
         "active_negotiations_count": active_neg_count
     }

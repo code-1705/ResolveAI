@@ -11,7 +11,9 @@ from backend.database import (
     upsert_invoice,
     record_transaction,
     validate_fsm_transition,
-    get_connection
+    get_connection,
+    get_merchant_by_id,
+    log_financial_transaction
 )
 from backend.razorpay_client import razorpay_client
 from backend.whatsapp_client import whatsapp_client
@@ -209,7 +211,6 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     customer_phone = notes.get("customer_phone")
 
     if not invoice_id and razorpay_payment_link_id:
-        from backend.database import get_connection
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT invoice_id FROM payment_links WHERE razorpay_payment_link_id = %s;", (razorpay_payment_link_id,))
@@ -242,12 +243,7 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
         
         lock = get_invoice_lock(f"account_{customer_phone}")
         async with lock:
-            from backend.database import get_connection
             from psycopg2.extras import DictCursor
-            from backend.database import get_invoice, upsert_invoice, record_transaction
-            from backend.models import InvoiceStatus
-            from backend.razorpay_client import razorpay_client
-            
             conn = get_connection()
             cursor = conn.cursor(cursor_factory=DictCursor)
             clean_phone = customer_phone.replace(" ", "").replace("-", "")
@@ -317,26 +313,23 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     # ==========================================
     lock = get_invoice_lock(invoice_id)
     async with lock:
-        from backend.database import get_invoice, upsert_invoice, record_transaction
-        from backend.models import InvoiceStatus
-        from backend.razorpay_client import razorpay_client
-        
+                
         invoice = get_invoice(invoice_id)
         if not invoice:
             return {"status": "error", "reason": f"Invoice '{invoice_id}' not found"}
 
-        success, is_duplicate = record_transaction(
-            invoice_id=invoice_id,
-            razorpay_payment_id=razorpay_payment_id,
-            razorpay_payment_link_id=razorpay_payment_link_id,
-            amount_paid_paise=amount_paise,
-            payment_method=payment_method
-        )
-
-        if is_duplicate:
+        # 1. Idempotency Check
+        conn_check = get_connection()
+        cur_check = conn_check.cursor()
+        cur_check.execute("SELECT id FROM transaction_ledger WHERE razorpay_payment_id = %s;", (razorpay_payment_id,))
+        if cur_check.fetchone():
+            conn_check.close()
+            print(f"[Webhook Idempotency]: Payment {razorpay_payment_id} already recorded.")
             return {"status": "ignored", "reason": "duplicate_payment_id", "razorpay_payment_id": razorpay_payment_id}
+        conn_check.close()
 
-        new_paid_paise = invoice.paid_amount_paise + amount_paise
+        # 2. Update Invoice State (Capped strictly at invoice original amount)
+        new_paid_paise = min(invoice.original_amount_paise, invoice.paid_amount_paise + amount_paise)
         new_remaining_paise = max(0, invoice.original_amount_paise - new_paid_paise)
         target_status = InvoiceStatus.PAID if new_remaining_paise == 0 else InvoiceStatus.PARTIALLY_PAID
         
@@ -344,6 +337,62 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
         invoice.remaining_amount_paise = new_remaining_paise
         invoice.status = target_status
         upsert_invoice(invoice)
+
+        # 3. Retrieve Merchant Profile & Financial Split (99% Merchant, 1% Platform Take-Rate)
+        conn_m = get_connection()
+        cur_m = conn_m.cursor()
+        cur_m.execute("SELECT merchant_id FROM master_invoices WHERE invoice_id = %s;", (invoice_id,))
+        m_row = cur_m.fetchone()
+        conn_m.close()
+        m_id = m_row[0] if (m_row and m_row[0]) else "default_merchant"
+        merchant = get_merchant_by_id(m_id)
+
+        comm_pct = getattr(merchant, 'commission_pct', 1.0) or 1.0
+        m_payout_pct = 100.0 - comm_pct
+        merchant_share_paise = int(amount_paise * (m_payout_pct / 100.0))
+        platform_fee_paise = amount_paise - merchant_share_paise
+
+        # 4. Execute Automated Razorpay Route Split Transfer
+        rzp_acc_id = getattr(merchant, 'razorpay_account_id', None) or f"acc_{m_id}"
+        trf_res = razorpay_client.create_payment_transfer(
+            payment_id=razorpay_payment_id,
+            account_id=rzp_acc_id,
+            amount_paise=merchant_share_paise,
+            notes={"invoice_id": invoice_id, "merchant_id": m_id}
+        )
+        transfer_id = trf_res.get("id")
+
+        # 5. Record Double-Entry Ledger (Inflow Customer Payment & Outflow 99% Merchant Wire)
+        log_financial_transaction(
+            merchant_id=m_id,
+            invoice_id=invoice_id,
+            transaction_type="INFLOW_CUSTOMER_PAYMENT",
+            gross_amount_paise=amount_paise,
+            merchant_amount_paise=merchant_share_paise,
+            platform_fee_paise=platform_fee_paise,
+            razorpay_payment_id=razorpay_payment_id,
+            razorpay_transfer_id=transfer_id,
+            razorpay_account_id=rzp_acc_id,
+            bank_beneficiary_name=getattr(merchant, 'bank_beneficiary_name', None),
+            bank_account_masked=f"••••••••{(getattr(merchant, 'bank_account_number', '') or '')[-4:]}",
+            bank_ifsc=getattr(merchant, 'bank_ifsc', None),
+            status="CAPTURED"
+        )
+        log_financial_transaction(
+            merchant_id=m_id,
+            invoice_id=invoice_id,
+            transaction_type="OUTFLOW_MERCHANT_SETTLEMENT",
+            gross_amount_paise=amount_paise,
+            merchant_amount_paise=merchant_share_paise,
+            platform_fee_paise=platform_fee_paise,
+            razorpay_payment_id=razorpay_payment_id,
+            razorpay_transfer_id=transfer_id,
+            razorpay_account_id=rzp_acc_id,
+            bank_beneficiary_name=getattr(merchant, 'bank_beneficiary_name', None),
+            bank_account_masked=f"••••••••{(getattr(merchant, 'bank_account_number', '') or '')[-4:]}",
+            bank_ifsc=getattr(merchant, 'bank_ifsc', None),
+            status="TRANSFERRED"
+        )
 
         if razorpay_payment_link_id:
             try:

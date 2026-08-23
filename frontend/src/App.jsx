@@ -102,6 +102,7 @@ export default function App() {
   const [bankErrorMsg, setBankErrorMsg] = useState(null);
   const [isEditingBank, setIsEditingBank] = useState(false);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [settlementLedger, setSettlementLedger] = useState([]);
 
   // Mandatory Bank Account Setup Gate check
   const isBankSetupComplete = Boolean(
@@ -308,17 +309,19 @@ export default function App() {
   const fetchData = async () => {
     try {
       const headers = getAuthHeaders();
-      const [invRes, guardRes, anaRes, profileRes, bankRes] = await Promise.all([
+      const [invRes, guardRes, anaRes, profileRes, bankRes, ledgerRes] = await Promise.all([
         fetch(`${API_BASE}/api/invoices`, { headers }),
         fetch(`${API_BASE}/api/guardrails`, { headers }),
         fetch(`${API_BASE}/api/analytics`, { headers }),
         fetch(`${API_BASE}/api/auth/me`, { headers }),
-        fetch(`${API_BASE}/api/merchant/bank-settlement`, { headers })
+        fetch(`${API_BASE}/api/merchant/bank-settlement`, { headers }),
+        fetch(`${API_BASE}/api/merchant/settlement-ledger`, { headers })
       ]);
       if (invRes.ok) setInvoices(await invRes.json());
       if (guardRes.ok) setGuardrails(await guardRes.json());
       if (anaRes.ok) setAnalytics(await anaRes.json());
       if (profileRes.ok) setMerchantProfile(await profileRes.json());
+      if (ledgerRes.ok) setSettlementLedger(await ledgerRes.json());
       if (bankRes.ok) {
         const bData = await bankRes.json();
         setBankConfig(prev => ({ ...prev, ...bData, bank_account_confirm: bData.bank_account_number || '' }));
@@ -840,10 +843,17 @@ export default function App() {
             {!isBankSetupComplete ? '🔒 Guardrail Policies' : '🛡️ Guardrail Policies'}
           </button>
 
-          {/* WhatsApp Simulator: Displayed ONLY for Test Accounts */}
+          {/* WhatsApp Simulator: Displayed ONLY for Test Accounts with verified bank */}
           {isTestAccount && (
             <button
-              onClick={() => setActiveTab('simulator')}
+              onClick={() => {
+                if (!isBankSetupComplete) {
+                  showToast('⚠️ Setup Required: Please configure your bank account for 99% direct settlements first!', 'error');
+                  setActiveTab('settlement');
+                } else {
+                  setActiveTab('simulator');
+                }
+              }}
               style={{
                 padding: '8px 18px',
                 borderRadius: '8px',
@@ -853,10 +863,11 @@ export default function App() {
                 fontWeight: '600',
                 transition: 'all 0.2s',
                 background: activeTab === 'simulator' ? 'var(--text-main)' : 'transparent',
-                color: activeTab === 'simulator' ? '#FFF' : 'var(--text-muted)'
+                color: activeTab === 'simulator' ? '#FFF' : 'var(--text-muted)',
+                opacity: !isBankSetupComplete ? 0.6 : 1
               }}
             >
-              💬 WhatsApp Simulator (Test Mode)
+              {!isBankSetupComplete ? '🔒 WhatsApp Simulator (Test Mode)' : '💬 WhatsApp Simulator (Test Mode)'}
             </button>
           )}
 
@@ -1573,7 +1584,7 @@ export default function App() {
                         </button>
                       )}
 
-                      {(!isBankSetupComplete || isEditingBank) ? (
+                      {(!isBankSetupComplete || isEditingBank) && (
                         <button
                           type="submit"
                           disabled={isSavingBank}
@@ -1592,30 +1603,6 @@ export default function App() {
                           }}
                         >
                           {isSavingBank ? 'Saving Account...' : isBankSetupComplete ? '💾 Update Settlement Account' : '💾 Save Settlement Account'}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsEditingBank(true);
-                            setBankErrorMsg(null);
-                          }}
-                          style={{
-                            padding: '12px 24px',
-                            borderRadius: '8px',
-                            border: '1px solid var(--border-color)',
-                            background: '#FFF',
-                            color: 'var(--text-main)',
-                            fontWeight: '600',
-                            fontSize: '0.9rem',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            boxShadow: '0 2px 4px rgba(0,0,0,0.04)'
-                          }}
-                        >
-                          <span>✏️</span> Edit Settlement Account
                         </button>
                       )}
                     </div>
@@ -1674,6 +1661,119 @@ export default function App() {
 
               </div>
 
+            </div>
+
+            {/* Live Financial Settlement Audit Ledger */}
+            <div className="glass-panel" style={{ padding: '28px', marginTop: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <h3 style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                      📜 Live Financial Settlement & Audit Ledger
+                    </h3>
+                    <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '12px', background: 'rgba(0, 102, 255, 0.1)', color: '#0066FF', fontWeight: '600' }}>
+                      Double-Entry Escrow Log
+                    </span>
+                  </div>
+                  <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Immutable real-time audit record of customer payment inflows and 99% automated merchant direct bank wire payouts.
+                  </p>
+                </div>
+                <button
+                  onClick={fetchData}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: '#FFF',
+                    color: 'var(--text-main)',
+                    fontSize: '0.82rem',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  🔄 Refresh Ledger
+                </button>
+              </div>
+
+              {settlementLedger.length === 0 ? (
+                <div style={{ padding: '40px 20px', textAlign: 'center', background: 'var(--bg-dark)', borderRadius: '12px', border: '1px dashed var(--border-color)' }}>
+                  <span style={{ fontSize: '2rem', display: 'block', marginBottom: '8px' }}>🏦</span>
+                  <strong style={{ fontSize: '0.95rem', color: 'var(--text-main)' }}>No Settlement Transactions Yet</strong>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '4px', maxWidth: '460px', margin: '4px auto 0' }}>
+                    When customers pay invoices through WhatsApp, the gross amount, 1.0% platform fee, and 99.0% direct bank wire transfer will appear here with full Razorpay Route audit IDs.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem', textAlign: 'left' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Date & Time</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Transaction Type</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Invoice & Customer</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Gross Amount</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Platform Cut (1%)</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Net Payout (99%)</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Transfer / Ref ID</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {settlementLedger.map((tx) => (
+                        <tr key={tx.id} style={{ borderBottom: '1px solid #F1F5F9', transition: 'background 0.15s' }}>
+                          <td style={{ padding: '14px', color: 'var(--text-dim)', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+                            {new Date(tx.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          </td>
+                          <td style={{ padding: '14px', whiteSpace: 'nowrap' }}>
+                            {tx.transaction_type === 'INFLOW_CUSTOMER_PAYMENT' ? (
+                              <span style={{ padding: '3px 8px', borderRadius: '6px', background: 'rgba(0, 102, 255, 0.1)', color: '#0066FF', fontSize: '0.75rem', fontWeight: '600' }}>
+                                ⬇ Customer Payment Inflow
+                              </span>
+                            ) : (
+                              <span style={{ padding: '3px 8px', borderRadius: '6px', background: 'rgba(55, 139, 89, 0.1)', color: 'var(--success)', fontSize: '0.75rem', fontWeight: '600' }}>
+                                ⬆ Direct Bank Wire (99%)
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ padding: '14px' }}>
+                            <div style={{ fontWeight: '600', color: 'var(--text-main)' }}>{tx.customer_name}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', fontFamily: 'monospace' }}>{tx.invoice_id}</div>
+                          </td>
+                          <td style={{ padding: '14px', fontWeight: '600', color: 'var(--text-main)' }}>
+                            ₹{tx.gross_amount_inr?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: '14px', color: 'var(--primary)', fontWeight: '600' }}>
+                            -₹{tx.platform_fee_inr?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: '14px', color: 'var(--success)', fontWeight: '700', fontSize: '0.92rem' }}>
+                            ₹{tx.merchant_amount_inr?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: '14px', fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                            {tx.razorpay_transfer_id || tx.razorpay_payment_id || '—'}
+                          </td>
+                          <td style={{ padding: '14px', whiteSpace: 'nowrap' }}>
+                            <span style={{
+                              padding: '4px 10px',
+                              borderRadius: '20px',
+                              fontSize: '0.72rem',
+                              fontWeight: '600',
+                              background: tx.status === 'TRANSFERRED' ? 'var(--success-bg)' : 'rgba(0, 102, 255, 0.1)',
+                              color: tx.status === 'TRANSFERRED' ? 'var(--success)' : '#0066FF',
+                              border: `1px solid ${tx.status === 'TRANSFERRED' ? 'var(--success)' : 'rgba(0, 102, 255, 0.3)'}`
+                            }}>
+                              {tx.status === 'TRANSFERRED' ? '🟢 SETTLED (T+1)' : '🟢 CAPTURED'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
           </div>

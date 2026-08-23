@@ -63,3 +63,26 @@ async def get_current_merchant(
             email="merchant@resolveai.com",
             business_name="Resolve.ai Merchant"
         )
+
+
+async def require_verified_merchant_bank(
+    merchant: Merchant = Depends(get_current_merchant)
+) -> Merchant:
+    """
+    Strict financial authorization gate: Blocks access to invoices, analytics, guardrails,
+    and collection tools until the merchant has verified their official Bank Account & IFSC.
+    """
+    has_valid_bank = bool(
+        merchant.bank_account_number and
+        len(str(merchant.bank_account_number).strip()) >= 8 and
+        merchant.bank_ifsc and
+        len(str(merchant.bank_ifsc).strip()) == 11
+    )
+    is_verified = (merchant.settlement_status in ["VERIFIED", "ACTIVE"]) and has_valid_bank
+
+    if not is_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Bank account setup and verification is required before accessing merchant features."
+        )
+    return merchant

@@ -72,10 +72,11 @@ def init_db():
     ON CONFLICT (merchant_id) DO NOTHING;
     """)
 
-    # 1. Merchant Guardrails Table
+    # 1. Merchant Guardrails Table (Multi-Tenant)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS merchant_guardrails (
-        id INTEGER PRIMARY KEY DEFAULT 1,
+        id SERIAL PRIMARY KEY,
+        merchant_id TEXT UNIQUE NOT NULL DEFAULT 'default_merchant',
         min_partial_payment_pct REAL NOT NULL DEFAULT 30.0,
         max_extension_days INTEGER NOT NULL DEFAULT 14,
         max_split_installments INTEGER NOT NULL DEFAULT 3,
@@ -114,20 +115,30 @@ def init_db():
     cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoices_phone ON master_invoices(customer_phone);")
 
-    # 3. Transaction Ledger Table (UNIQUE razorpay_payment_id)
+    # 3. Double-Entry Transaction Ledger Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS transaction_ledger (
         id SERIAL PRIMARY KEY,
+        merchant_id TEXT NOT NULL DEFAULT 'default_merchant',
         invoice_id TEXT NOT NULL,
-        razorpay_payment_id TEXT NOT NULL UNIQUE,
-        razorpay_payment_link_id TEXT,
-        amount_paid_paise INTEGER NOT NULL,
-        payment_method TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (invoice_id) REFERENCES master_invoices (invoice_id)
+        transaction_type TEXT NOT NULL DEFAULT 'INFLOW_CUSTOMER_PAYMENT',
+        razorpay_payment_id TEXT,
+        razorpay_transfer_id TEXT,
+        razorpay_account_id TEXT,
+        gross_amount_paise INTEGER NOT NULL DEFAULT 0,
+        merchant_amount_paise INTEGER NOT NULL DEFAULT 0,
+        platform_fee_paise INTEGER NOT NULL DEFAULT 0,
+        amount_paid_paise INTEGER,
+        payment_method TEXT,
+        bank_beneficiary_name TEXT,
+        bank_account_masked TEXT,
+        bank_ifsc TEXT,
+        status TEXT NOT NULL DEFAULT 'CAPTURED',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
     """)
-    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_payment_id ON transaction_ledger(razorpay_payment_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_payment_id ON transaction_ledger(razorpay_payment_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_merchant_id ON transaction_ledger(merchant_id);")
 
     # 4. Payment Link Records Table
     cursor.execute("""
@@ -613,7 +624,8 @@ def get_or_create_merchant(merchant_id: str, email: str, business_name: str, pho
             pan_number=row.get("pan_number"),
             commission_pct=float(row.get("commission_pct") or 1.0),
             settlement_status=row.get("settlement_status") or "ACTIVE",
-            password_hash=row.get("password_hash")
+            password_hash=row.get("password_hash"),
+            razorpay_account_id=row.get("razorpay_account_id")
         )
     
     cursor.execute("""
@@ -664,7 +676,8 @@ def get_merchant_by_email(email: str) -> Optional[Merchant]:
             pan_number=row.get("pan_number"),
             commission_pct=float(row.get("commission_pct") or 1.0),
             settlement_status=row.get("settlement_status") or "ACTIVE",
-            password_hash=row.get("password_hash")
+            password_hash=row.get("password_hash"),
+            razorpay_account_id=row.get("razorpay_account_id")
         )
     return None
 
@@ -704,3 +717,96 @@ def create_merchant_with_password(
         settlement_status=row.get("settlement_status") or "ACTIVE",
         password_hash=row.get("password_hash")
     )
+
+
+def log_financial_transaction(
+    merchant_id: str,
+    invoice_id: str,
+    transaction_type: str,
+    gross_amount_paise: int,
+    merchant_amount_paise: int,
+    platform_fee_paise: int,
+    razorpay_payment_id: Optional[str] = None,
+    razorpay_transfer_id: Optional[str] = None,
+    razorpay_account_id: Optional[str] = None,
+    bank_beneficiary_name: Optional[str] = None,
+    bank_account_masked: Optional[str] = None,
+    bank_ifsc: Optional[str] = None,
+    status: str = 'CAPTURED'
+) -> int:
+    """Records an immutable financial event (Customer Payment Inflow or 99% Merchant Transfer Outflow) in the Double-Entry Ledger."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO transaction_ledger (
+        merchant_id, invoice_id, transaction_type,
+        razorpay_payment_id, razorpay_transfer_id, razorpay_account_id,
+        gross_amount_paise, merchant_amount_paise, platform_fee_paise,
+        amount_paid_paise, payment_method,
+        bank_beneficiary_name, bank_account_masked, bank_ifsc,
+        status, created_at
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+    RETURNING id;
+    """, (
+        merchant_id, invoice_id, transaction_type,
+        razorpay_payment_id, razorpay_transfer_id, razorpay_account_id,
+        gross_amount_paise, merchant_amount_paise, platform_fee_paise,
+        gross_amount_paise, "RAZORPAY_ROUTE_SPLIT",
+        bank_beneficiary_name, bank_account_masked, bank_ifsc,
+        status
+    ))
+    trans_id = cursor.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return trans_id
+
+def get_merchant_settlement_ledger(merchant_id: str) -> List[Dict[str, Any]]:
+    """Fetches complete financial double-entry transaction history for a specific merchant."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("""
+    SELECT tl.*, mi.customer_name
+    FROM transaction_ledger tl
+    LEFT JOIN master_invoices mi ON tl.invoice_id = mi.invoice_id
+    WHERE tl.merchant_id = %s
+    ORDER BY tl.created_at DESC;
+    """, (merchant_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    ledger = []
+    for r in rows:
+        gross_paise = r["gross_amount_paise"] or 0
+        merchant_paise = r["merchant_amount_paise"] or 0
+        fee_paise = r["platform_fee_paise"] or 0
+        
+        ledger.append({
+            "id": r["id"],
+            "invoice_id": r["invoice_id"],
+            "customer_name": r.get("customer_name") or "Customer",
+            "transaction_type": r["transaction_type"],
+            "razorpay_payment_id": r.get("razorpay_payment_id"),
+            "razorpay_transfer_id": r.get("razorpay_transfer_id"),
+            "razorpay_account_id": r.get("razorpay_account_id"),
+            "gross_amount_inr": round(gross_paise / 100.0, 2),
+            "merchant_amount_inr": round(merchant_paise / 100.0, 2),
+            "platform_fee_inr": round(fee_paise / 100.0, 2),
+            "bank_beneficiary_name": r.get("bank_beneficiary_name"),
+            "bank_account_masked": r.get("bank_account_masked"),
+            "bank_ifsc": r.get("bank_ifsc"),
+            "status": r["status"],
+            "created_at": str(r["created_at"])
+        })
+    return ledger
+
+def update_merchant_razorpay_account(merchant_id: str, razorpay_account_id: str):
+    """Saves the linked Razorpay Route Account ID for automated payouts."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE merchants
+    SET razorpay_account_id = %s
+    WHERE merchant_id = %s;
+    """, (razorpay_account_id, merchant_id))
+    conn.commit()
+    conn.close()
