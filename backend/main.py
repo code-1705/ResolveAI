@@ -47,15 +47,15 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # --- Active Reconciliation Cron ---
 scheduler = AsyncIOScheduler()
 
-@scheduler.scheduled_job('interval', minutes=30)
+@scheduler.scheduled_job('interval', minutes=15)
 async def active_reconciliation_job():
-    """Polls Razorpay for missed webhooks every 30 minutes."""
+    """Polls Razorpay for missed webhooks and syncs active payment links every 15 minutes."""
     try:
-        print("[Cron] Running Active Reconciliation...")
+        print("[Cron] Running Active Reconciliation & Payment Link Sync...")
+        # 1. Sync captured payments
         payments = razorpay_client.get_recent_payments()
         for p in payments:
             if p.get("status") == "captured":
-                # Synthesize a webhook payload and reconcile it
                 mock_webhook = {
                     "event": "payment.captured",
                     "payload": {
@@ -65,6 +65,31 @@ async def active_reconciliation_job():
                     }
                 }
                 await reconcile_payment_event(mock_webhook)
+
+        # 2. Check and sync all ACTIVE payment links with live Razorpay status
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT razorpay_payment_link_id FROM payment_links WHERE status = 'ACTIVE';")
+        active_links = [r[0] for r in cur.fetchall()]
+        conn.close()
+
+        for pl_id in active_links:
+            try:
+                rzp_url = f"https://api.razorpay.com/v1/payment_links/{pl_id}"
+                resp = requests.get(rzp_url, auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET), timeout=5.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    live_status = data.get("status", "").upper()
+                    if live_status in ("PAID", "EXPIRED", "CANCELLED"):
+                        c = get_connection()
+                        k = c.cursor()
+                        k.execute("UPDATE payment_links SET status = %s WHERE razorpay_payment_link_id = %s;", (live_status, pl_id))
+                        c.commit()
+                        c.close()
+                        print(f"[Cron Link Sync]: Updated {pl_id} status -> {live_status}")
+            except Exception as pl_err:
+                print(f"[Cron Link Sync Error] {pl_id}: {pl_err}")
+
         print("[Cron] Active Reconciliation Complete.")
     except Exception as e:
         print(f"[Cron] Active Reconciliation Failed: {e}")
@@ -108,7 +133,7 @@ class GuardrailsUpdateRequest(BaseModel):
 
 class ChatMessageRequest(BaseModel):
     session_id: Optional[str] = None
-    invoice_id: str
+    invoice_id: Optional[str] = None
     customer_phone: str
     message: str
 
@@ -635,19 +660,18 @@ async def save_merchant_guardrails(req: GuardrailsUpdateRequest):
 # --- 4. Chat Simulator & Session Endpoints ---
 @app.get("/api/chat/history")
 async def get_chat_history(
-    invoice_id: str = Query(...),
-    customer_phone: str = Query(...)
+    customer_phone: str = Query(...),
+    invoice_id: Optional[str] = Query(None)
 ):
     """
-    Returns full chat session message history.
+    Returns full chat session message history for a customer phone number.
     Auto-initializes session with an outbound initial agent reminder message if brand new.
     """
-    session_id = f"{customer_phone}_{invoice_id}"
-    session = session_manager.get_or_create_session(session_id, invoice_id, customer_phone)
+    session = session_manager.get_or_create_session(customer_phone=customer_phone, invoice_id=invoice_id)
     return {
         "session_id": session.session_id,
-        "invoice_id": session.invoice_id,
         "customer_phone": session.customer_phone,
+        "invoice_id": session.invoice_id,
         "messages": [
             {
                 "sender": m.sender,
@@ -664,7 +688,7 @@ async def send_chat_message(req: ChatMessageRequest):
     Processes incoming messages from the WhatsApp simulator UI.
     Invokes AgenticNegotiator, returns response text & visual audit trace, and broadcasts SSE event.
     """
-    session_id = req.session_id or f"{req.customer_phone}_{req.invoice_id}"
+    session_id = req.customer_phone or req.session_id
 
     agent_res = await agentic_negotiator.process_customer_message(
         session_id=session_id,
@@ -675,6 +699,7 @@ async def send_chat_message(req: ChatMessageRequest):
 
     out_data = {
         "session_id": session_id,
+        "customer_phone": req.customer_phone,
         "invoice_id": req.invoice_id,
         "response_text": agent_res["response_text"],
         "metadata": agent_res.get("metadata", {}),
@@ -687,12 +712,13 @@ async def send_chat_message(req: ChatMessageRequest):
 @app.post("/api/chat/reset")
 async def reset_chat_session(req: ChatResetRequest):
     """Resets chat history for a session."""
+    phone = req.session_id.split("_")[0] if "_" in req.session_id else req.session_id
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE chat_sessions SET messages_json = '[]' WHERE session_id = %s;", (req.session_id,))
+    cursor.execute("UPDATE chat_sessions SET messages_json = '[]' WHERE customer_phone = %s;", (phone,))
     conn.commit()
     conn.close()
-    return {"status": "reset", "session_id": req.session_id}
+    return {"status": "reset", "customer_phone": phone}
 
 # --- Razorpay Standard Web Checkout Endpoints ---
 @app.post("/api/create-order")

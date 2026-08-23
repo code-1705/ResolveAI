@@ -78,7 +78,11 @@ class ChatMessage:
 
 @dataclass
 class ChatSession:
-    session_id: str  # Composite key: f"{customer_phone}_{invoice_id}"
-    invoice_id: str
-    customer_phone: str
+    customer_phone: str  # Primary key: 1 session per customer phone
     messages: List[ChatMessage] = field(default_factory=list)
+    session_id: Optional[str] = None
+    invoice_id: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.session_id:
+            self.session_id = self.customer_phone

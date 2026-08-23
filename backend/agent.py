@@ -170,20 +170,28 @@ HUMAN CONVERSATION GUIDELINES:
         customer_phone: str,
         customer_message: str
     ) -> Dict[str, Any]:
-        lock = get_session_lock(session_id)
+        lock = get_session_lock(customer_phone)
         async with lock:
-            session = self.session_manager.get_or_create_session(session_id, invoice_id, customer_phone)
-            self.session_manager.add_message(session_id, "user", customer_message)
+            session = self.session_manager.get_or_create_session(customer_phone=customer_phone, invoice_id=invoice_id)
+            self.session_manager.add_message(customer_phone, "user", customer_message)
 
-            invoice = get_invoice(invoice_id)
+            if not invoice_id:
+                profile = get_customer_financial_profile(customer_phone)
+                pending = [inv for inv in profile["invoices"] if inv["status"] != "PAID"]
+                if pending:
+                    invoice_id = pending[0]["invoice_id"]
+                elif profile["invoices"]:
+                    invoice_id = profile["invoices"][0]["invoice_id"]
+
+            invoice = get_invoice(invoice_id) if invoice_id else None
             guardrails = get_guardrails()
 
             if not invoice:
-                err_text = f"Invoice '{invoice_id}' not found."
-                self.session_manager.add_message(session_id, "agent", err_text)
+                err_text = f"No active invoices found for your account."
+                self.session_manager.add_message(customer_phone, "agent", err_text)
                 return {
                     "response_text": err_text,
-                    "trace": {"thought": "Invoice lookup failed", "guardrail_check": {"status": "ERROR"}}
+                    "trace": {"thought": "No invoice found for customer", "guardrail_check": {"status": "ERROR"}}
                 }
 
             # Check for Text Payment Claims

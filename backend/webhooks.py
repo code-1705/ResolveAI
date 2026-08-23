@@ -297,6 +297,14 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
 
             if razorpay_payment_link_id:
                 try:
+                    conn_pl = get_connection()
+                    cur_pl = conn_pl.cursor()
+                    cur_pl.execute("UPDATE payment_links SET status = 'PAID' WHERE razorpay_payment_link_id = %s;", (razorpay_payment_link_id,))
+                    conn_pl.commit()
+                    conn_pl.close()
+                except Exception as pl_err:
+                    print(f"[Payment Link Status Update Error]: {pl_err}")
+                try:
                     razorpay_client.cancel_payment_link(razorpay_payment_link_id)
                 except Exception:
                     pass
@@ -338,6 +346,14 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
         upsert_invoice(invoice)
 
         if razorpay_payment_link_id:
+            try:
+                conn_pl = get_connection()
+                cur_pl = conn_pl.cursor()
+                cur_pl.execute("UPDATE payment_links SET status = 'PAID' WHERE razorpay_payment_link_id = %s;", (razorpay_payment_link_id,))
+                conn_pl.commit()
+                conn_pl.close()
+            except Exception:
+                pass
             try:
                 razorpay_client.cancel_payment_link(razorpay_payment_link_id)
             except Exception:

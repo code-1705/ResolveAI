@@ -126,25 +126,11 @@ def init_db():
     );
     """)
 
-    # 5. Chat Sessions Table (Composite Session Key: customer_phone + '_' + invoice_id)
+    # 5. Chat Sessions Table (Unified 1 row per customer_phone)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_sessions (
-        session_id TEXT PRIMARY KEY,
-        invoice_id TEXT NOT NULL,
-        customer_phone TEXT NOT NULL,
+        customer_phone TEXT PRIMARY KEY,
         messages_json TEXT NOT NULL DEFAULT '[]'
-    );
-    """)
-
-    # 6. Invoice Private Document Blob Storage Table (PostgreSQL BYTEA)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS invoice_documents (
-        invoice_id TEXT PRIMARY KEY,
-        file_name TEXT NOT NULL,
-        file_mime_type TEXT NOT NULL,
-        file_bytes BYTEA NOT NULL,
-        customer_phone TEXT NOT NULL,
-        uploaded_at TEXT NOT NULL
     );
     """)
 

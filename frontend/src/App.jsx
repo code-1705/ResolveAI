@@ -78,7 +78,7 @@ export default function App() {
         showToast('Failed to update invoice.', 'error');
       }
     } catch (err) {
-      alert('Error updating invoice: ' + err.message);
+      showToast(`Error updating invoice: ${err.message}`, 'error');
     }
   };
 
@@ -214,11 +214,12 @@ export default function App() {
   const selectedInvoice = activeCustomer?.invoices[0] || invoices[0];
 
 
-  // Fetch chat history for selected invoice
-  const fetchChatHistory = async (inv) => {
-    if (!inv) return;
+  // Fetch chat history for selected customer phone
+  const fetchChatHistory = async (customerPhone, invoiceId = null) => {
+    if (!customerPhone) return;
     try {
-      const res = await fetch(`${API_BASE}/api/chat/history?invoice_id=${inv.invoice_id}&customer_phone=${encodeURIComponent(inv.customer_phone)}`);
+      const invParam = invoiceId ? `&invoice_id=${invoiceId}` : '';
+      const res = await fetch(`${API_BASE}/api/chat/history?customer_phone=${encodeURIComponent(customerPhone)}${invParam}`);
       if (res.ok) {
         const data = await res.json();
         setChatMessages(data.messages || []);
@@ -229,18 +230,20 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (activeCustomer && activeCustomer.invoices.length > 0) {
-      fetchChatHistory(activeCustomer.invoices[0]);
+    if (activeCustomer) {
+      const firstInvId = activeCustomer.invoices && activeCustomer.invoices.length > 0 ? activeCustomer.invoices[0].invoice_id : null;
+      fetchChatHistory(activeCustomer.customer_phone, firstInvId);
     }
-  }, [selectedPhone, invoices, activeCustomer]); // Fix: re-fetch chat when invoice balance changes
+  }, [selectedPhone, invoices, activeCustomer]); // Fix: re-fetch chat when customer or balance changes
 
   // Send message to simulator
   const handleSendMessage = async (customText = null) => {
     const textToSend = customText || inputMessage;
-    if (!textToSend.trim() || !selectedInvoice || isSending) return;
+    if (!textToSend.trim() || !activeCustomer || isSending) return;
 
-    const currentInv = selectedInvoice;
-    const session_id = `${currentInv.customer_phone}_${currentInv.invoice_id}`;
+    const phone = activeCustomer.customer_phone;
+    const currentInv = selectedInvoice || (activeCustomer.invoices && activeCustomer.invoices.length > 0 ? activeCustomer.invoices[0] : null);
+    const invoice_id = currentInv ? currentInv.invoice_id : null;
 
     // Add user message locally
     const newMsg = { sender: 'user', text: textToSend, timestamp: new Date().toLocaleTimeString() };
@@ -253,9 +256,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          session_id,
-          invoice_id: currentInv.invoice_id,
-          customer_phone: currentInv.customer_phone,
+          session_id: phone,
+          customer_phone: phone,
+          invoice_id: invoice_id,
           message: textToSend
         })
       });
@@ -315,6 +318,10 @@ export default function App() {
 
   const handleCreateBill = async (e) => {
     e.preventDefault();
+    if (!newBillData.file_name || !newBillData.file_bytes_b64) {
+      showToast('Invoice document is required. Please upload an invoice PDF or image first.', 'error');
+      return;
+    }
     if (!newBillData.customer_name || !newBillData.customer_phone || !newBillData.original_amount_inr) {
       showToast('Please fill out all required fields.', 'error');
       return;
@@ -345,17 +352,17 @@ export default function App() {
           due_date: new Date().toISOString().split('T')[0]
         });
         fetchData();
-        alert(`Bill '${createdInv.invoice_id}' created successfully for ${createdInv.customer_name}!`);
+        showToast(`Bill '${createdInv.invoice_id}' created successfully for ${createdInv.customer_name}!`, 'success');
       }
     } catch (err) {
-      alert('Failed to create bill: ' + err.message);
+      showToast(`Failed to create bill: ${err.message}`, 'error');
     }
   };
 
   // Razorpay Standard Web Checkout Modal Handler
   const handleRazorpayCheckout = async (inv) => {
     if (!inv || inv.remaining_amount_paise < 100) {
-      alert("Invoice remaining amount must be at least ₹1.00 (100 paise).");
+      showToast("Invoice remaining amount must be at least ₹1.00 (100 paise).", "error");
       return;
     }
 
@@ -403,15 +410,15 @@ export default function App() {
             });
 
             if (verifyRes.ok) {
-              alert(`🎉 Payment Verified Successfully!\nPayment ID: ${response.razorpay_payment_id}`);
+              showToast(`Payment Verified Successfully! (ID: ${response.razorpay_payment_id})`, "success");
               fetchData();
               fetchChatHistory(inv);
             } else {
               const verifyErr = await verifyRes.json();
-              alert(`⚠️ Payment Verification Failed: ${verifyErr.detail || "Signature Mismatch"}`);
+              showToast(`Payment Verification Failed: ${verifyErr.detail || "Signature Mismatch"}`, "error");
             }
           } catch (verifyError) {
-            alert(`⚠️ Error verifying payment: ${verifyError.message}`);
+            showToast(`Error verifying payment: ${verifyError.message}`, "error");
           }
         },
         prefill: {
@@ -432,15 +439,15 @@ export default function App() {
       if (window.Razorpay) {
         const rzp = new window.Razorpay(options);
         rzp.on('payment.failed', (resp) => {
-          alert(`❌ Payment Failed: ${resp.error.description || "Transaction failed"}`);
+          showToast(`Payment Failed: ${resp.error.description || "Transaction failed"}`, "error");
         });
         rzp.open();
       } else {
-        alert("Razorpay SDK not loaded. Please refresh the page.");
+        showToast("Razorpay SDK not loaded. Please refresh the page.", "error");
       }
 
     } catch (err) {
-      alert(`Checkout Error: ${err.message}`);
+      showToast(`Checkout Error: ${err.message}`, "error");
     }
   };
 
@@ -673,29 +680,7 @@ export default function App() {
                         <td style={{ padding: '16px' }}>{getStatusBadge(inv.status, inv.due_date)}</td>
                         <td style={{ padding: '16px', textAlign: 'right' }}>
                           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                            <button
-                              onClick={() => {
-                                setSelectedPhone(inv.customer_phone);
-                                setActiveTab('simulator');
-                              }}
-                              title="Chat / WhatsApp Simulator"
-                              style={{
-                                padding: '8px 12px',
-                                borderRadius: '8px',
-                                border: '1px solid var(--border-color)',
-                                background: '#FFF',
-                                cursor: 'pointer',
-                                fontSize: '1rem',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                transition: 'all 0.2s ease',
-                              }}
-                              onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-dark)'}
-                              onMouseOut={(e) => e.currentTarget.style.background = '#FFF'}
-                            >
-                              💬
-                            </button>
+
                             <button
                               onClick={() => handleOpenEditModal(inv)}
                               title="Edit Bill / Record Payment"
@@ -1021,33 +1006,7 @@ export default function App() {
 
               </div>
 
-              {/* Quick Preset Action Buttons */}
-              <div style={{ padding: '10px 16px', background: '#FFF', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '8px', overflowX: 'auto' }}>
-                <button
-                  onClick={() => handleSendMessage("Can I pay 40% today and the rest next week?")}
-                  style={{ padding: '6px 12px', borderRadius: '16px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', color: 'var(--text-main)', cursor: 'pointer', fontSize: '0.75rem', whitespace: 'nowrap' }}
-                >
-                  ⚡ Propose 40% Today
-                </button>
-                <button
-                  onClick={() => handleSendMessage("Can I extend the payment due date by 14 days?")}
-                  style={{ padding: '6px 12px', borderRadius: '16px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.75rem', whitespace: 'nowrap' }}
-                >
-                  📅 Request 14-Day Extension
-                </button>
-                <button
-                  onClick={() => handleSendMessage("I can only pay 10% right now")}
-                  style={{ padding: '6px 12px', borderRadius: '16px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.75rem', whitespace: 'nowrap' }}
-                >
-                  ⚠️ Lowball 10% Offer
-                </button>
-                <button
-                  onClick={() => handleSendMessage("I have transferred 50000 via UPI")}
-                  style={{ padding: '6px 12px', borderRadius: '16px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', color: 'var(--warning)', cursor: 'pointer', fontSize: '0.75rem', whitespace: 'nowrap' }}
-                >
-                  💳 Claim "Paid via UPI"
-                </button>
-              </div>
+
 
               {/* Chat Input Bar */}
               <div style={{ padding: '12px 16px', background: 'var(--bg-dark)', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -1345,17 +1304,17 @@ export default function App() {
               </button>
             </div>
 
-            {/* AI File Extraction Dropzone */}
+            {/* Step 1: Mandatory AI File Extraction Dropzone */}
             <div style={{
               marginBottom: '20px',
-              padding: '20px',
+              padding: newBillData.file_name ? '14px 18px' : '24px 20px',
               borderRadius: '12px',
-              border: '2px dashed var(--border-color)',
-              background: 'var(--bg-dark)',
+              border: newBillData.file_name ? '1px solid var(--success)' : '2px dashed var(--primary)',
+              background: newBillData.file_name ? 'var(--success-bg)' : 'rgba(59, 130, 246, 0.04)',
               textAlign: 'center',
               cursor: 'pointer',
               position: 'relative',
-              transition: 'border-color 0.2s',
+              transition: 'all 0.2s',
             }}>
               <input
                 type="file"
@@ -1377,146 +1336,189 @@ export default function App() {
                     ⚠️ {extractError}
                   </p>
                   <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Click to try another file or enter details manually below.
+                    Click here to upload another PDF or image file.
                   </p>
+                </div>
+              ) : newBillData.file_name ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', textAlign: 'left' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '1.4rem' }}>📄</span>
+                    <div>
+                      <div style={{ fontWeight: '600', fontSize: '0.88rem', color: 'var(--text-main)' }}>
+                        {newBillData.file_name}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--success)', fontWeight: '500' }}>
+                        ✓ Document Attached & Auto-Extracted with Gemini AI
+                      </div>
+                    </div>
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--primary)', fontWeight: '600', textDecoration: 'underline' }}>
+                    Change File
+                  </span>
                 </div>
               ) : (
                 <div>
-                  <p style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '4px' }}>
-                    📄 Upload Invoice File (PDF / Image)
+                  <p style={{ fontSize: '0.95rem', fontWeight: '600', color: 'var(--primary)', marginBottom: '4px' }}>
+                    📁 Step 1: Upload Invoice File (Required)
                   </p>
-                  <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                    Gemini AI will automatically extract Name, Amount, Due Date & Phone
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Upload a PDF or Image invoice. Gemini AI will automatically extract Name, Amount, Due Date & Phone.
                   </p>
                 </div>
               )}
             </div>
 
-            <form onSubmit={handleCreateBill} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  Customer / SME Name *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Rajesh Enterprises"
-                  value={newBillData.customer_name}
-                  onChange={(e) => setNewBillData({ ...newBillData, customer_name: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
+            {/* Step 2: Form Review & Submission (Unlocked only after file upload) */}
+            {!newBillData.file_name && !isExtracting && (
+              <div style={{ padding: '24px 20px', borderRadius: '12px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                🔒 <strong>Step 2 is locked:</strong> Please upload an invoice bill above to automatically populate and edit details.
               </div>
+            )}
 
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  WhatsApp Phone Number *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. +919812345678"
-                  value={newBillData.customer_phone}
-                  onChange={(e) => setNewBillData({ ...newBillData, customer_phone: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
-              </div>
+            {newBillData.file_name && (
+              <form onSubmit={handleCreateBill} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Step 2: Review & Edit Extracted Details
+                </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  Original Invoice Amount (₹ INR) *
-                </label>
-                <input
-                  type="number"
-                  placeholder="e.g. 75000"
-                  step="0.01"
-                  value={newBillData.original_amount_inr}
-                  onChange={(e) => setNewBillData({ ...newBillData, original_amount_inr: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
-              </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
+                    Customer / SME Name *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Rajesh Enterprises"
+                    value={newBillData.customer_name}
+                    onChange={(e) => setNewBillData({ ...newBillData, customer_name: e.target.value })}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      background: '#FFF',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.9rem'
+                    }}
+                    required
+                  />
+                </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  Payment Due Date *
-                </label>
-                <input
-                  type="date"
-                  value={newBillData.due_date}
-                  onChange={(e) => setNewBillData({ ...newBillData, due_date: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
-              </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
+                    WhatsApp Phone Number *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. +919812345678"
+                    value={newBillData.customer_phone}
+                    onChange={(e) => setNewBillData({ ...newBillData, customer_phone: e.target.value })}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      background: '#FFF',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.9rem'
+                    }}
+                    required
+                  />
+                </div>
 
-              <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  style={{
-                    flex: 1,
-                    padding: '12px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-muted)',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    fontSize: '0.88rem'
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    flex: 2,
-                    padding: '12px',
-                    borderRadius: '8px',
-                    background: 'var(--text-main)',
-                    color: '#FFF',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    fontSize: '0.88rem',
-                  }}
-                >
-                  Create Invoice Bill
-                </button>
-              </div>
-            </form>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
+                    Original Invoice Amount (₹ INR) *
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 75000"
+                    step="0.01"
+                    value={newBillData.original_amount_inr}
+                    onChange={(e) => setNewBillData({ ...newBillData, original_amount_inr: e.target.value })}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      background: '#FFF',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.9rem'
+                    }}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
+                    Payment Due Date *
+                  </label>
+                  <input
+                    type="date"
+                    value={newBillData.due_date}
+                    onChange={(e) => setNewBillData({ ...newBillData, due_date: e.target.value })}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      background: '#FFF',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.9rem'
+                    }}
+                    required
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCreateModalOpen(false);
+                      setNewBillData({
+                        customer_name: '',
+                        customer_phone: '',
+                        original_amount_inr: '',
+                        due_date: new Date().toISOString().split('T')[0],
+                        file_bytes_b64: null,
+                        file_name: null,
+                        file_mime_type: null
+                      });
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      borderRadius: '8px',
+                      background: '#FFF',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      fontSize: '0.88rem'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isExtracting}
+                    style={{
+                      flex: 2,
+                      padding: '12px',
+                      borderRadius: '8px',
+                      background: 'var(--text-main)',
+                      color: '#FFF',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      fontSize: '0.88rem',
+                      opacity: isExtracting ? 0.6 : 1
+                    }}
+                  >
+                    Create Invoice Bill
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
