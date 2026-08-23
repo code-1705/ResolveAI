@@ -189,12 +189,17 @@ class AgenticNegotiator:
                     # Persist Payment Link Record in DB
                     self._record_payment_link(invoice_id, payment_link_id, approved_amount_paise, reference_id)
 
-                    resp_text = (
+                    fallback_text = (
                         f"Great news! Your proposed payment of ₹{approved_amount_inr:,.2f} is approved. "
                         f"I have generated a custom Razorpay payment link for you:\n\n"
                         f"👉 {payment_link_url}\n\n"
                         f"This link is valid for {effective_days} days. Completing this payment will update your balance immediately."
                     )
+                    
+                    llm_resp = self._generate_llm_response(
+                        customer_message, True, guardrail_meta, reason, invoice, guardrails, payment_link_url
+                    )
+                    resp_text = llm_resp if llm_resp else fallback_text
 
                 except Exception as e:
                     # Graceful Tool Exception Recovery
@@ -209,11 +214,16 @@ class AgenticNegotiator:
                 suggested_inr = guardrail_meta.get("suggested_amount_inr", invoice.remaining_amount_inr * 0.3)
                 suggested_ext = guardrail_meta.get("max_allowed_extension_days", 14)
                 
-                resp_text = (
+                fallback_text = (
                     f"Thank you for your offer. However, {reason} "
                     f"Based on merchant policy, I can approve an initial payment of ₹{suggested_inr:,.2f} "
                     f"with a date extension of up to {suggested_ext} days. Would you like me to generate a payment link for ₹{suggested_inr:,.2f}?"
                 )
+                
+                llm_resp = self._generate_llm_response(
+                    customer_message, False, guardrail_meta, reason, invoice, guardrails, None
+                )
+                resp_text = llm_resp if llm_resp else fallback_text
 
             # Record Agent Response in ChatSession
             self.session_manager.add_message(
@@ -279,7 +289,7 @@ class AgenticNegotiator:
         """
 
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
             headers = {"Content-Type": "application/json"}
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
@@ -308,6 +318,56 @@ class AgenticNegotiator:
         except Exception:
             pass
 
+        return None
+
+    def _generate_llm_response(
+        self,
+        customer_message: str,
+        guardrail_passed: bool,
+        guardrail_meta: dict,
+        reason: str,
+        invoice: Any,
+        guardrails: Any,
+        payment_link_url: str = None
+    ) -> str:
+        if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("your_google"):
+            return None
+        
+        status_text = "APPROVED" if guardrail_passed else "REJECTED"
+        
+        if guardrail_passed:
+            approved_amount = guardrail_meta.get('approved_amount_inr', 0)
+            instructions = f"The proposal was APPROVED. You MUST confirm the payment of ₹{approved_amount:,.2f}. You MUST include this exact payment link at the end of your message: {payment_link_url}"
+        else:
+            suggested_amount = guardrail_meta.get('suggested_amount_inr', 0)
+            suggested_ext = guardrail_meta.get('max_allowed_extension_days', 0)
+            instructions = f"The proposal was REJECTED because: {reason}. You MUST issue a firm but polite counter-offer proposing exactly ₹{suggested_amount:,.2f} with a {suggested_ext} day extension. Do NOT hallucinate any payment link. Just ask if they want you to generate a link for ₹{suggested_amount:,.2f}."
+
+        prompt = f"""
+        You are Resolve.ai, an AI collections agent. You are currently negotiating with a customer.
+        Tone: {guardrails.tone}
+        Customer's Message: "{customer_message}"
+        Remaining Invoice Balance: ₹{invoice.remaining_amount_inr:,.2f}
+        
+        System Resolution: {status_text}
+        Strict Instructions: {instructions}
+        
+        Write a natural, conversational response back to the customer directly. Do not output JSON, just the exact text you want to send. Stay strictly in character. Keep it concise.
+        """
+        
+        try:
+            import requests
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}]
+            }
+            resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=5.0)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return text_resp
+        except Exception as e:
+            pass
         return None
 
     def _parse_proposal_intent(

@@ -41,9 +41,11 @@ def seed_database(db_path: str = settings.DATABASE_PATH):
     """
     Initializes the database schema and seeds realistic Indian SME overdue invoices for testing and demo.
     """
+    from backend.database import get_invoice
     init_db(db_path)
     for inv in DEMO_INVOICES:
-        upsert_invoice(inv, db_path=db_path)
+        if get_invoice(inv.invoice_id, db_path) is None:
+            upsert_invoice(inv, db_path=db_path)
     print(f"Database seeded successfully with {len(DEMO_INVOICES)} demo invoices at '{db_path}'.")
 
 if __name__ == "__main__":
