@@ -1,4 +1,3 @@
-import sqlite3
 import json
 import datetime
 from typing import Optional, List, Tuple
@@ -45,57 +44,12 @@ def validate_fsm_transition(current_status: str, new_status: str) -> bool:
 import psycopg2
 from psycopg2.extras import DictCursor
 
-class DBCursorWrapper:
-    def __init__(self, cursor, is_postgres: bool):
-        self.cursor = cursor
-        self.is_postgres = is_postgres
+def get_connection():
+    return psycopg2.connect(settings.DATABASE_URL)
 
-    def execute(self, query: str, params: tuple = ()):
-        if self.is_postgres:
-            # Convert SQLite '?' to Postgres '%s'
-            query = query.replace('?', '%s')
-            # Convert SQLite AUTOINCREMENT to Postgres SERIAL
-            query = query.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
-        return self.cursor.execute(query, params)
-
-    def fetchone(self):
-        return self.cursor.fetchone()
-
-    def fetchall(self):
-        return self.cursor.fetchall()
-
-class DBConnectionWrapper:
-    def __init__(self, conn, is_postgres: bool):
-        self.conn = conn
-        self.is_postgres = is_postgres
-
-    def cursor(self):
-        cur = self.conn.cursor(cursor_factory=DictCursor) if self.is_postgres else self.conn.cursor()
-        return DBCursorWrapper(cur, self.is_postgres)
-
-    def commit(self):
-        self.conn.commit()
-
-    def rollback(self):
-        self.conn.rollback()
-
-    def close(self):
-        self.conn.close()
-
-def get_connection(db_path: str = settings.DATABASE_PATH):
-    if settings.DATABASE_URL and settings.DATABASE_URL.startswith("postgres"):
-        conn = psycopg2.connect(settings.DATABASE_URL)
-        return DBConnectionWrapper(conn, is_postgres=True)
-    else:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        return DBConnectionWrapper(conn, is_postgres=False)
-
-def init_db(db_path: str = settings.DATABASE_PATH):
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
+def init_db():
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
 
     # 1. Merchant Guardrails Table
     cursor.execute("""
@@ -130,13 +84,13 @@ def init_db(db_path: str = settings.DATABASE_PATH):
     except Exception:
         conn.rollback()
 
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoices_phone ON master_invoices(customer_phone);")
 
     # 3. Transaction Ledger Table (UNIQUE razorpay_payment_id)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS transaction_ledger (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         invoice_id TEXT NOT NULL,
         razorpay_payment_id TEXT NOT NULL UNIQUE,
         razorpay_payment_link_id TEXT,
@@ -151,7 +105,7 @@ def init_db(db_path: str = settings.DATABASE_PATH):
     # 4. Payment Link Records Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS payment_links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         invoice_id TEXT NOT NULL,
         razorpay_payment_link_id TEXT NOT NULL UNIQUE,
         amount_paise INTEGER NOT NULL,
@@ -177,7 +131,7 @@ def init_db(db_path: str = settings.DATABASE_PATH):
     if cursor.fetchone()[0] == 0:
         cursor.execute("""
         INSERT INTO merchant_guardrails (id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
-        VALUES (1, ?, ?, ?, ?, ?);
+        VALUES (1, %s, %s, %s, %s, %s);
         """, (
             settings.DEFAULT_MIN_PARTIAL_PAYMENT_PCT,
             settings.DEFAULT_MAX_EXTENSION_DAYS,
@@ -191,9 +145,9 @@ def init_db(db_path: str = settings.DATABASE_PATH):
 
 # --- CRUD Operations ---
 
-def get_guardrails(db_path: str = settings.DATABASE_PATH) -> MerchantGuardrails:
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
+def get_guardrails() -> MerchantGuardrails:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("SELECT * FROM merchant_guardrails WHERE id = 1;")
     row = cursor.fetchone()
     conn.close()
@@ -208,16 +162,16 @@ def get_guardrails(db_path: str = settings.DATABASE_PATH) -> MerchantGuardrails:
         )
     return MerchantGuardrails()
 
-def update_guardrails(guardrails: MerchantGuardrails, db_path: str = settings.DATABASE_PATH) -> MerchantGuardrails:
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
+def update_guardrails(guardrails: MerchantGuardrails, ) -> MerchantGuardrails:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("""
     UPDATE merchant_guardrails
-    SET min_partial_payment_pct = ?,
-        max_extension_days = ?,
-        max_split_installments = ?,
-        auto_discount_waiver_pct = ?,
-        tone = ?
+    SET min_partial_payment_pct = %s,
+        max_extension_days = %s,
+        max_split_installments = %s,
+        auto_discount_waiver_pct = %s,
+        tone = %s
     WHERE id = 1;
     """, (
         guardrails.min_partial_payment_pct,
@@ -230,12 +184,12 @@ def update_guardrails(guardrails: MerchantGuardrails, db_path: str = settings.DA
     conn.close()
     return guardrails
 
-def upsert_invoice(invoice: MasterInvoice, db_path: str = settings.DATABASE_PATH) -> MasterInvoice:
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
+def upsert_invoice(invoice: MasterInvoice, ) -> MasterInvoice:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("""
     INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT(invoice_id) DO UPDATE SET
         customer_name=excluded.customer_name,
         customer_phone=excluded.customer_phone,
@@ -260,10 +214,10 @@ def upsert_invoice(invoice: MasterInvoice, db_path: str = settings.DATABASE_PATH
     conn.close()
     return invoice
 
-def get_invoice(invoice_id: str, db_path: str = settings.DATABASE_PATH) -> Optional[MasterInvoice]:
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM master_invoices WHERE invoice_id = ?;", (invoice_id,))
+def get_invoice(invoice_id: str, ) -> Optional[MasterInvoice]:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("SELECT * FROM master_invoices WHERE invoice_id = %s;", (invoice_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -280,10 +234,10 @@ def get_invoice(invoice_id: str, db_path: str = settings.DATABASE_PATH) -> Optio
         )
     return None
 
-def get_invoices_by_phone(phone: str, db_path: str = settings.DATABASE_PATH) -> List[MasterInvoice]:
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM master_invoices WHERE customer_phone = ?;", (phone,))
+def get_invoices_by_phone(phone: str, ) -> List[MasterInvoice]:
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("SELECT * FROM master_invoices WHERE customer_phone = %s;", (phone,))
     rows = cursor.fetchall()
     conn.close()
     return [
@@ -300,17 +254,17 @@ def get_invoices_by_phone(phone: str, db_path: str = settings.DATABASE_PATH) -> 
         ) for r in rows
     ]
 
-def update_invoice_status(invoice_id: str, new_status: str, db_path: str = settings.DATABASE_PATH) -> MasterInvoice:
-    invoice = get_invoice(invoice_id, db_path)
+def update_invoice_status(invoice_id: str, new_status: str, ) -> MasterInvoice:
+    invoice = get_invoice(invoice_id, )
     if not invoice:
         raise ValueError(f"Invoice '{invoice_id}' not found.")
     
     # Enforce FSM state transitions
     validate_fsm_transition(invoice.status.value, new_status)
     
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE master_invoices SET status = ? WHERE invoice_id = ?;", (new_status, invoice_id))
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
+    cursor.execute("UPDATE master_invoices SET status = %s WHERE invoice_id = %s;", (new_status, invoice_id))
     conn.commit()
     conn.close()
     
@@ -323,26 +277,26 @@ def record_transaction(
     razorpay_payment_link_id: Optional[str],
     amount_paid_paise: int,
     payment_method: str = "UPI",
-    db_path: str = settings.DATABASE_PATH
+    
 ) -> Tuple[bool, bool]:
     """
     Records a payment transaction into the TransactionLedger table.
     Enforces UNIQUE(razorpay_payment_id) at DB level.
     Returns: (success: bool, is_duplicate: bool)
     """
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=DictCursor)
     created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     
     try:
         cursor.execute("""
         INSERT INTO transaction_ledger (invoice_id, razorpay_payment_id, razorpay_payment_link_id, amount_paid_paise, payment_method, created_at)
-        VALUES (?, ?, ?, ?, ?, ?);
+        VALUES (%s, %s, %s, %s, %s, %s);
         """, (invoice_id, razorpay_payment_id, razorpay_payment_link_id, amount_paid_paise, payment_method, created_at))
         conn.commit()
         conn.close()
         return (True, False)  # Successfully inserted
-    except (sqlite3.IntegrityError, psycopg2.IntegrityError):
+    except (psycopg2.IntegrityError):
         conn.rollback()
         conn.close()
         return (False, True)  # Duplicate payment_id caught cleanly!

@@ -41,10 +41,6 @@ class Settings(BaseModel):
     DEFAULT_AUTO_DISCOUNT_WAIVER_PCT: float = 5.0  # Max 5% waiver
     DEFAULT_TONE: str = "professional_empathetic"
     
-    # Database Configuration
-    DATABASE_PATH: str = os.path.join(os.path.dirname(__file__), "resolve_ai.db")
-    
-    # In test mode, fallback to SQLite by ignoring the .env postgres URL
     @property
     def is_test_env(self) -> bool:
         import sys
@@ -52,11 +48,11 @@ class Settings(BaseModel):
         
     @property
     def get_db_url(self) -> Optional[str]:
-        return None if self.is_test_env else os.getenv("DATABASE_URL")
+        return os.getenv("DATABASE_URL")
         
     @property
     def get_redis_url(self) -> Optional[str]:
-        return None if self.is_test_env else os.getenv("REDIS_URL")
+        return os.getenv("REDIS_URL")
         
     DATABASE_URL: Optional[str] = os.getenv("DATABASE_URL")
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")

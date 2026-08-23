@@ -19,7 +19,6 @@ from backend.database import (
     upsert_invoice,
     get_connection
 )
-from backend.seed_data import seed_database
 from backend.guardrails import GuardrailEngine, paise_to_inr, inr_to_paise
 from backend.razorpay_client import razorpay_client
 from backend.webhooks import verify_meta_webhook, process_whatsapp_webhook, reconcile_payment_event
@@ -67,8 +66,8 @@ async def active_reconciliation_job():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Seed database and initialize tables
-    seed_database(settings.DATABASE_PATH)
+    # Startup: Initialize tables
+    init_db(settings.DATABASE_PATH)
     scheduler.start()
     yield
     # Shutdown

@@ -71,7 +71,7 @@ class SessionManager:
 
     def get_or_create_session(self, session_id: str, invoice_id: str, customer_phone: str) -> ChatSession:
         """
-        Loads an existing ChatSession from SQLite or creates a new one.
+        Loads an existing ChatSession from PostgreSQL or creates a new one.
         Composite session key: f"{customer_phone}_{invoice_id}"
         """
         conn = get_connection(self.db_path)
@@ -149,7 +149,7 @@ class SessionManager:
         metadata: Optional[Dict[str, Any]] = None
     ) -> ChatMessage:
         """
-        Appends a user or agent message turn to the SQLite chat session.
+        Appends a user or agent message turn to the PostgreSQL chat session.
         """
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
