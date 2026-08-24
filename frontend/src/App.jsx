@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import AuthView from './AuthView';
+import LandingPage from './LandingPage';
 import './index.css';
 
 const API_BASE = 'http://localhost:8000';
@@ -67,7 +68,46 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
+  // Initialize route from current browser URL path
+  const getInitialRoute = () => {
+    const path = window.location.pathname.toLowerCase();
+    if (path.includes('/login') || path.includes('/signin') || path.includes('/auth')) {
+      return 'auth';
+    }
+    return 'landing';
+  };
+
+  const [unauthView, setUnauthView] = useState(getInitialRoute);
+
+  const navigateTo = (route) => {
+    setUnauthView(route);
+    const targetPath = route === 'auth' ? '/login' : '/';
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({ route }, '', targetPath);
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname.toLowerCase();
+      if (path.includes('/login') || path.includes('/signin') || path.includes('/auth')) {
+        setUnauthView('auth');
+      } else {
+        setUnauthView('landing');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const [merchantSession, setMerchantSession] = useState(null);
+
+  useEffect(() => {
+    if (merchantSession && !window.location.pathname.includes('/dashboard')) {
+      window.history.replaceState({}, '', '/dashboard');
+    }
+  }, [merchantSession]);
+
   const [merchantProfile, setMerchantProfile] = useState(null);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard' | 'guardrails' | 'simulator'
@@ -763,12 +803,23 @@ export default function App() {
     );
   }
 
-  // 1. Unauthenticated View (Merchant Login / Sign Up)
+  // 1. Unauthenticated View (Landing Page or Sign In / Sign Up View)
   if (!merchantSession) {
     return (
       <>
         <ToastContainer toasts={toasts} removeToast={removeToast} />
-        <AuthView onAuthSuccess={setMerchantSession} showToast={showToast} />
+        {unauthView === 'landing' ? (
+          <LandingPage
+            onGetStarted={() => navigateTo('auth')}
+            onSignIn={() => navigateTo('auth')}
+          />
+        ) : (
+          <AuthView
+            onAuthSuccess={setMerchantSession}
+            showToast={showToast}
+            onBackToLanding={() => navigateTo('landing')}
+          />
+        )}
       </>
     );
   }
@@ -907,6 +958,8 @@ export default function App() {
             onClick={async () => {
               await supabase.auth.signOut();
               setMerchantSession(null);
+              setMerchantProfile(null);
+              navigateTo('landing');
               showToast('Signed out of Merchant Portal.', 'info');
             }}
             style={{

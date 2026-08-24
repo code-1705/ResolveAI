@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 
-export default function AuthView({ onAuthSuccess, showToast }) {
+export default function AuthView({ onAuthSuccess, showToast, onBackToLanding }) {
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -83,42 +83,68 @@ export default function AuthView({ onAuthSuccess, showToast }) {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'radial-gradient(circle at 50% 10%, #F8FAFC 0%, #EDF2F7 100%)',
+      backgroundColor: 'var(--bg-dark, #f2f0e9)',
       padding: '24px',
-      fontFamily: 'var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif)'
+      fontFamily: "'Plus Jakarta Sans', 'Inter', -apple-system, sans-serif"
     }}>
       <div style={{
         width: '100%',
         maxWidth: '440px',
-        background: '#FFFFFF',
-        borderRadius: '20px',
-        border: '1px solid var(--border-color, #E2E8F0)',
-        boxShadow: '0 20px 40px -15px rgba(0, 0, 0, 0.08), 0 0 1px rgba(0, 0, 0, 0.1)',
+        backgroundColor: 'var(--bg-card, #ffffff)',
+        borderRadius: '16px',
+        border: '1px solid var(--border-color, #e6e4dc)',
+        boxShadow: '0 8px 30px rgba(0, 0, 0, 0.04)',
         padding: '36px',
         position: 'relative'
       }}>
         
+        {onBackToLanding && (
+          <button
+            type="button"
+            onClick={onBackToLanding}
+            style={{
+              position: 'absolute',
+              top: '20px',
+              left: '20px',
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted, #666560)',
+              fontSize: '0.85rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              transition: 'color 0.2s'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.color = 'var(--text-main, #24221f)'}
+            onMouseOut={(e) => e.currentTarget.style.color = 'var(--text-muted, #666560)'}
+          >
+            ← Home
+          </button>
+        )}
+
         {/* Logo & Header */}
-        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '28px', marginTop: onBackToLanding ? '14px' : '0' }}>
           <div style={{
-            width: '48px',
-            height: '48px',
-            borderRadius: '12px',
-            background: 'var(--primary, #3B82F6)',
+            width: '44px',
+            height: '44px',
+            borderRadius: '10px',
+            backgroundColor: 'var(--primary, #da7756)',
             color: '#FFFFFF',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '1.4rem',
+            fontSize: '1.3rem',
             marginBottom: '12px',
-            boxShadow: '0 8px 16px rgba(59, 130, 246, 0.25)'
+            boxShadow: '0 4px 12px rgba(218, 119, 86, 0.25)'
           }}>
             ⚡
           </div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-main, #0F172A)', margin: '0 0 6px 0' }}>
+          <h1 style={{ fontSize: '1.45rem', fontWeight: '800', color: 'var(--text-main, #24221f)', margin: '0 0 6px 0', letterSpacing: '-0.02em' }}>
             Resolve.ai
           </h1>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted, #64748B)', margin: 0 }}>
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-muted, #666560)', margin: 0 }}>
             Autonomous Accounts Receivable & Collections Portal
           </p>
         </div>
@@ -126,9 +152,10 @@ export default function AuthView({ onAuthSuccess, showToast }) {
         {/* Tab Switcher */}
         <div style={{
           display: 'flex',
-          background: '#F1F5F9',
+          backgroundColor: 'var(--bg-dark, #f2f0e9)',
           padding: '4px',
           borderRadius: '10px',
+          border: '1px solid var(--border-color, #e6e4dc)',
           marginBottom: '24px'
         }}>
           <button
@@ -137,15 +164,15 @@ export default function AuthView({ onAuthSuccess, showToast }) {
             style={{
               flex: 1,
               padding: '8px',
-              border: 'none',
+              border: mode === 'login' ? '1px solid var(--border-color, #e6e4dc)' : 'none',
               borderRadius: '8px',
               cursor: 'pointer',
               fontWeight: '600',
               fontSize: '0.85rem',
               transition: 'all 0.2s',
-              background: mode === 'login' ? '#FFFFFF' : 'transparent',
-              color: mode === 'login' ? '#0F172A' : '#64748B',
-              boxShadow: mode === 'login' ? '0 2px 4px rgba(0,0,0,0.05)' : 'none'
+              backgroundColor: mode === 'login' ? '#FFFFFF' : 'transparent',
+              color: mode === 'login' ? 'var(--text-main, #24221f)' : 'var(--text-muted, #666560)',
+              boxShadow: mode === 'login' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none'
             }}
           >
             Sign In
@@ -156,15 +183,15 @@ export default function AuthView({ onAuthSuccess, showToast }) {
             style={{
               flex: 1,
               padding: '8px',
-              border: 'none',
+              border: mode === 'signup' ? '1px solid var(--border-color, #e6e4dc)' : 'none',
               borderRadius: '8px',
               cursor: 'pointer',
               fontWeight: '600',
               fontSize: '0.85rem',
               transition: 'all 0.2s',
-              background: mode === 'signup' ? '#FFFFFF' : 'transparent',
-              color: mode === 'signup' ? '#0F172A' : '#64748B',
-              boxShadow: mode === 'signup' ? '0 2px 4px rgba(0,0,0,0.05)' : 'none'
+              backgroundColor: mode === 'signup' ? '#FFFFFF' : 'transparent',
+              color: mode === 'signup' ? 'var(--text-main, #24221f)' : 'var(--text-muted, #666560)',
+              boxShadow: mode === 'signup' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none'
             }}
           >
             Create Account
@@ -176,9 +203,9 @@ export default function AuthView({ onAuthSuccess, showToast }) {
           <div style={{
             padding: '10px 14px',
             borderRadius: '8px',
-            background: '#FEF2F2',
-            border: '1px solid #FCA5A5',
-            color: '#991B1B',
+            backgroundColor: 'var(--danger-bg, #faeaea)',
+            border: '1px solid var(--danger, #c44336)',
+            color: 'var(--danger, #c44336)',
             fontSize: '0.82rem',
             marginBottom: '18px',
             display: 'flex',
@@ -193,7 +220,7 @@ export default function AuthView({ onAuthSuccess, showToast }) {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {mode === 'signup' && (
             <div>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-main, #24221f)', marginBottom: '6px' }}>
                 Business / Company Name *
               </label>
               <input
@@ -205,9 +232,10 @@ export default function AuthView({ onAuthSuccess, showToast }) {
                   width: '100%',
                   padding: '10px 14px',
                   borderRadius: '8px',
-                  border: '1px solid #CBD5E1',
+                  border: '1px solid var(--border-color, #e6e4dc)',
+                  backgroundColor: '#FFFFFF',
                   fontSize: '0.9rem',
-                  color: '#0F172A',
+                  color: 'var(--text-main, #24221f)',
                   outline: 'none',
                   boxSizing: 'border-box'
                 }}
@@ -217,7 +245,7 @@ export default function AuthView({ onAuthSuccess, showToast }) {
           )}
 
           <div>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-main, #24221f)', marginBottom: '6px' }}>
               Work Email *
             </label>
             <input
@@ -229,9 +257,10 @@ export default function AuthView({ onAuthSuccess, showToast }) {
                 width: '100%',
                 padding: '10px 14px',
                 borderRadius: '8px',
-                border: '1px solid #CBD5E1',
+                border: '1px solid var(--border-color, #e6e4dc)',
+                backgroundColor: '#FFFFFF',
                 fontSize: '0.9rem',
-                color: '#0F172A',
+                color: 'var(--text-main, #24221f)',
                 outline: 'none',
                 boxSizing: 'border-box'
               }}
@@ -240,7 +269,7 @@ export default function AuthView({ onAuthSuccess, showToast }) {
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-main, #24221f)', marginBottom: '6px' }}>
               Password *
             </label>
             <input
@@ -252,9 +281,10 @@ export default function AuthView({ onAuthSuccess, showToast }) {
                 width: '100%',
                 padding: '10px 14px',
                 borderRadius: '8px',
-                border: '1px solid #CBD5E1',
+                border: '1px solid var(--border-color, #e6e4dc)',
+                backgroundColor: '#FFFFFF',
                 fontSize: '0.9rem',
-                color: '#0F172A',
+                color: 'var(--text-main, #24221f)',
                 outline: 'none',
                 boxSizing: 'border-box'
               }}
@@ -264,7 +294,7 @@ export default function AuthView({ onAuthSuccess, showToast }) {
 
           {mode === 'signup' && (
             <div>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-main, #24221f)', marginBottom: '6px' }}>
                 Contact Phone (Optional)
               </label>
               <input
@@ -276,9 +306,10 @@ export default function AuthView({ onAuthSuccess, showToast }) {
                   width: '100%',
                   padding: '10px 14px',
                   borderRadius: '8px',
-                  border: '1px solid #CBD5E1',
+                  border: '1px solid var(--border-color, #e6e4dc)',
+                  backgroundColor: '#FFFFFF',
                   fontSize: '0.9rem',
-                  color: '#0F172A',
+                  color: 'var(--text-main, #24221f)',
                   outline: 'none',
                   boxSizing: 'border-box'
                 }}
@@ -294,22 +325,22 @@ export default function AuthView({ onAuthSuccess, showToast }) {
               padding: '12px',
               borderRadius: '8px',
               border: 'none',
-              background: '#0F172A',
+              backgroundColor: 'var(--primary, #da7756)',
               color: '#FFFFFF',
               fontWeight: '600',
-              fontSize: '0.9rem',
+              fontSize: '0.92rem',
               cursor: 'pointer',
-              marginTop: '8px',
-              transition: 'all 0.2s',
+              marginTop: '6px',
+              boxShadow: '0 2px 8px rgba(218, 119, 86, 0.25)',
+              transition: 'background 0.2s',
               opacity: isLoading ? 0.7 : 1
             }}
+            onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--primary-hover, #c46445)'}
+            onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'var(--primary, #da7756)'}
           >
             {isLoading ? 'Processing...' : mode === 'login' ? 'Sign In to Merchant Portal' : 'Create Merchant Account'}
           </button>
         </form>
-
-
-
       </div>
     </div>
   );
