@@ -97,12 +97,12 @@ export default function LandingPage({ onSignIn }) {
         borderBottom: '1px solid var(--border-color, #e6e4dc)',
         padding: '0 36px',
         height: '68px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between'
+        display: 'grid',
+        gridTemplateColumns: '1fr auto 1fr',
+        alignItems: 'center'
       }}>
         {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', justifySelf: 'start' }}>
           <div style={{
             width: '34px',
             height: '34px',
@@ -127,8 +127,8 @@ export default function LandingPage({ onSignIn }) {
           </div>
         </div>
 
-        {/* Navigation Links */}
-        <nav style={{ display: 'flex', alignItems: 'center', gap: '28px' }}>
+        {/* Navigation Links (Strictly Centered) */}
+        <nav style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '28px', justifySelf: 'center' }}>
           <a href="#how-it-works" style={{ color: 'var(--text-muted, #666560)', textDecoration: 'none', fontSize: '0.88rem', fontWeight: '500' }}>How It Works</a>
           <a href="#guardrails" style={{ color: 'var(--text-muted, #666560)', textDecoration: 'none', fontSize: '0.88rem', fontWeight: '500' }}>Guardrails</a>
           <a href="#calculator" style={{ color: 'var(--text-muted, #666560)', textDecoration: 'none', fontSize: '0.88rem', fontWeight: '500' }}>ROI Calculator</a>
@@ -137,7 +137,7 @@ export default function LandingPage({ onSignIn }) {
         </nav>
 
         {/* Header Action: Only Sign In Button */}
-        <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifySelf: 'end' }}>
           <button
             onClick={onSignIn}
             style={{

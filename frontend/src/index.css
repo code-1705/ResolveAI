@@ -36,6 +36,7 @@ body {
   color: var(--text-main);
   min-height: 100vh;
   overflow-x: hidden;
+  zoom: 0.8;
 }
 
 h1, h2, h3, .brand-font {
