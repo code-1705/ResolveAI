@@ -178,35 +178,112 @@ export default function App() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState({
     invoice_id: '',
+    invoice_number: '',
+    summary_description: '',
     customer_name: '',
     customer_phone: '',
+    invoice_date: '',
     due_date: '',
+    billing_address: '',
+    shipping_address: '',
+    line_items: [],
+    original_amount_inr: '',
     remaining_amount_inr: 0,
     manual_payment_inr: ''
   });
 
   const handleOpenEditModal = (inv) => {
+    const rawItems = inv.items || [];
+    const meta = inv.metadata || {};
+
+    const normalizedItems = rawItems.length > 0 ? rawItems.map(item => {
+      const r = parseFloat(item.rate || item.unit_price) || 0;
+      const q = parseFloat(item.quantity || item.qty) || 1;
+      return {
+        description: item.description || item.item_description || '',
+        rate: r > 0 ? r : '',
+        quantity: q,
+        total: Math.round(((r || 0) * (q || 1) + Number.EPSILON) * 100) / 100
+      };
+    }) : [{
+      description: meta.summary_description || 'Billed Services / Products',
+      rate: inv.original_amount_inr || '',
+      quantity: 1,
+      total: inv.original_amount_inr || 0
+    }];
+
     setEditingInvoice({
       invoice_id: inv.invoice_id,
-      customer_name: inv.customer_name,
-      customer_phone: inv.customer_phone,
-      due_date: inv.due_date,
-      remaining_amount_inr: inv.remaining_amount_inr,
+      invoice_number: inv.invoice_id,
+      summary_description: meta.summary_description || '',
+      customer_name: inv.customer_name || '',
+      customer_phone: inv.customer_phone || '',
+      invoice_date: meta.invoice_date || inv.due_date || new Date().toISOString().split('T')[0],
+      due_date: inv.due_date || '',
+      billing_address: meta.billing_address || '',
+      shipping_address: meta.shipping_address || '',
+      line_items: normalizedItems,
+      original_amount_inr: inv.original_amount_inr !== undefined ? inv.original_amount_inr : '',
+      remaining_amount_inr: inv.remaining_amount_inr || 0,
       manual_payment_inr: ''
     });
     setIsEditModalOpen(true);
   };
 
+  const handleAddEditLineItem = () => {
+    setEditingInvoice(prev => ({
+      ...prev,
+      line_items: [...(prev.line_items || []), { description: '', rate: '', quantity: 1, total: 0 }]
+    }));
+  };
+
+  const handleRemoveEditLineItem = (index) => {
+    setEditingInvoice(prev => {
+      const updated = (prev.line_items || []).filter((_, i) => i !== index);
+      const newTotal = updated.reduce((acc, curr) => acc + (parseFloat(curr.total) || 0), 0);
+      return {
+        ...prev,
+        line_items: updated.length > 0 ? updated : [{ description: '', rate: '', quantity: 1, total: 0 }],
+        original_amount_inr: newTotal > 0 ? newTotal.toFixed(2) : prev.original_amount_inr
+      };
+    });
+  };
+
+  const handleEditLineItemChange = (index, field, value) => {
+    setEditingInvoice(prev => {
+      const updated = [...(prev.line_items || [])];
+      const row = { ...updated[index], [field]: value };
+      if (field === 'rate' || field === 'quantity') {
+        const r = parseFloat(field === 'rate' ? value : row.rate) || 0;
+        const q = parseFloat(field === 'quantity' ? value : row.quantity) || 0;
+        row.total = Math.round(((r * q) + Number.EPSILON) * 100) / 100;
+      }
+      updated[index] = row;
+      const sumTotal = updated.reduce((acc, curr) => acc + (parseFloat(curr.total) || 0), 0);
+      return {
+        ...prev,
+        line_items: updated,
+        original_amount_inr: sumTotal > 0 ? sumTotal.toFixed(2) : prev.original_amount_inr
+      };
+    });
+  };
+
   const handleSaveEditInvoice = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${API_BASE}/api/invoices/${editingInvoice.invoice_id}`, {
+      const res = await fetch(`${API_BASE}/api/invoices/${encodeURIComponent(editingInvoice.invoice_id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_name: editingInvoice.customer_name,
           customer_phone: editingInvoice.customer_phone,
           due_date: editingInvoice.due_date,
+          summary_description: editingInvoice.summary_description || null,
+          invoice_date: editingInvoice.invoice_date || null,
+          billing_address: editingInvoice.billing_address || null,
+          shipping_address: editingInvoice.shipping_address || null,
+          line_items: editingInvoice.line_items || null,
+          original_amount_inr: parseFloat(editingInvoice.original_amount_inr || 0) || null,
           manual_payment_inr: parseFloat(editingInvoice.manual_payment_inr || 0)
         })
       });
@@ -217,7 +294,7 @@ export default function App() {
         showToast('Invoice updated successfully!', 'success');
       } else {
         const err = await res.json();
-        showToast('Failed to update invoice.', 'error');
+        showToast(err.detail || 'Failed to update invoice.', 'error');
       }
     } catch (err) {
       showToast(`Error updating invoice: ${err.message}`, 'error');
@@ -2246,7 +2323,9 @@ export default function App() {
         }}>
           <div style={{
             width: '100%',
-            maxWidth: '540px',
+            maxWidth: '760px',
+            maxHeight: '90vh',
+            overflowY: 'auto',
             padding: '32px',
             borderRadius: '16px',
             background: '#FFFFFF',
@@ -2266,68 +2345,206 @@ export default function App() {
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditInvoice} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  Customer / SME Name
-                </label>
-                <input
-                  type="text"
-                  value={editingInvoice.customer_name}
-                  onChange={(e) => setEditingInvoice({ ...editingInvoice, customer_name: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
+            <form onSubmit={handleSaveEditInvoice} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              {/* Top Row: Invoice # and Brief Description */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                    Invoice #
+                  </label>
+                  <input
+                    type="text"
+                    value={editingInvoice.invoice_number || editingInvoice.invoice_id}
+                    disabled
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '0.88rem', cursor: 'not-allowed' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                    Brief Description / Summary
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Monthly Server Maintenance & Cloud Retainer"
+                    value={editingInvoice.summary_description}
+                    onChange={(e) => setEditingInvoice({ ...editingInvoice, summary_description: e.target.value })}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                  />
+                </div>
               </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  WhatsApp Phone Number
-                </label>
-                <input
-                  type="text"
-                  value={editingInvoice.customer_phone}
-                  onChange={(e) => setEditingInvoice({ ...editingInvoice, customer_phone: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
+              {/* 2-Column Section: Customer & Addresses */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px', padding: '16px', background: 'var(--bg-dark)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                {/* Left Column: Customer & Dates */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                      Billing To (Customer Name) *
+                    </label>
+                    <input
+                      type="text"
+                      value={editingInvoice.customer_name}
+                      onChange={(e) => setEditingInvoice({ ...editingInvoice, customer_name: e.target.value })}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                      WhatsApp Phone Number *
+                    </label>
+                    <input
+                      type="text"
+                      value={editingInvoice.customer_phone}
+                      onChange={(e) => setEditingInvoice({ ...editingInvoice, customer_phone: e.target.value })}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                        Issue Date
+                      </label>
+                      <input
+                        type="date"
+                        value={editingInvoice.invoice_date}
+                        onChange={(e) => setEditingInvoice({ ...editingInvoice, invoice_date: e.target.value })}
+                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.82rem' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                        Expiry / Due Date *
+                      </label>
+                      <input
+                        type="date"
+                        value={editingInvoice.due_date}
+                        onChange={(e) => setEditingInvoice({ ...editingInvoice, due_date: e.target.value })}
+                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.82rem' }}
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Addresses */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                      Billing Address
+                    </label>
+                    <textarea
+                      rows="2"
+                      placeholder="Enter billing address..."
+                      value={editingInvoice.billing_address}
+                      onChange={(e) => setEditingInvoice({ ...editingInvoice, billing_address: e.target.value })}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.85rem', resize: 'vertical' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                      Shipping Address
+                    </label>
+                    <textarea
+                      rows="2"
+                      placeholder="Enter shipping address..."
+                      value={editingInvoice.shipping_address}
+                      onChange={(e) => setEditingInvoice({ ...editingInvoice, shipping_address: e.target.value })}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.85rem', resize: 'vertical' }}
+                    />
+                  </div>
+                </div>
               </div>
 
+              {/* Line Items Table */}
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                  Payment Due Date
-                </label>
-                <input
-                  type="date"
-                  value={editingInvoice.due_date}
-                  onChange={(e) => setEditingInvoice({ ...editingInvoice, due_date: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: '#FFF',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.9rem'
-                  }}
-                  required
-                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                    Itemized Line Items
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleAddEditLineItem}
+                    style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.82rem', fontWeight: '600', cursor: 'pointer' }}
+                  >
+                    + Add Line Item
+                  </button>
+                </div>
+
+                <div style={{ border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden', background: '#FFF' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.84rem' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-dark)', borderBottom: '1px solid var(--border-color)', textAlign: 'left', color: 'var(--text-muted)' }}>
+                        <th style={{ padding: '8px 12px', fontWeight: '600' }}>DESCRIPTION</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '600', width: '130px' }}>RATE/ITEM (₹)</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '600', width: '80px' }}>QTY</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '600', width: '130px', textAlign: 'right' }}>TOTAL (₹)</th>
+                        <th style={{ padding: '8px 8px', width: '40px', textAlign: 'center' }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(editingInvoice.line_items || []).map((item, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                          <td style={{ padding: '8px 10px' }}>
+                            <input
+                              type="text"
+                              placeholder="Select or enter item description"
+                              value={item.description}
+                              onChange={(e) => handleEditLineItemChange(idx, 'description', e.target.value)}
+                              style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.84rem' }}
+                            />
+                          </td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={item.rate}
+                              onChange={(e) => handleEditLineItemChange(idx, 'rate', e.target.value)}
+                              style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.84rem' }}
+                            />
+                          </td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => handleEditLineItemChange(idx, 'quantity', e.target.value)}
+                              style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.84rem' }}
+                            />
+                          </td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: '600', color: 'var(--text-main)' }}>
+                            ₹{parseFloat(item.total || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEditLineItem(idx)}
+                              style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.9rem' }}
+                              title="Remove line item"
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Total Amount Summary */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '16px', padding: '12px 18px', background: 'var(--bg-dark)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                <span style={{ fontSize: '0.95rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                  Total Invoice Amount:
+                </span>
+                <span style={{ fontSize: '1.2rem', fontWeight: '800', color: 'var(--primary)' }}>
+                  ₹{parseFloat(editingInvoice.original_amount_inr || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
               </div>
 
               {/* Record Manual / Offline Payment Section */}
@@ -2337,7 +2554,7 @@ export default function App() {
                     💳 Record Offline / Partial Payment (₹ INR)
                   </label>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Remaining: ₹{editingInvoice.remaining_amount_inr?.toLocaleString('en-IN')}
+                    Remaining Balance: ₹{editingInvoice.remaining_amount_inr?.toLocaleString('en-IN')}
                   </span>
                 </div>
                 <input
@@ -2361,7 +2578,7 @@ export default function App() {
                 </p>
               </div>
 
-              <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+              <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
                 <button
                   type="button"
                   onClick={() => setIsEditModalOpen(false)}
@@ -2389,8 +2606,9 @@ export default function App() {
                     color: '#FFF',
                     border: 'none',
                     cursor: 'pointer',
-                    fontWeight: '500',
+                    fontWeight: '600',
                     fontSize: '0.88rem',
+                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)'
                   }}
                 >
                   Save Changes

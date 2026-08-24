@@ -529,6 +529,13 @@ class EditInvoiceRequest(BaseModel):
     customer_name: str
     customer_phone: str
     due_date: str
+    invoice_number: Optional[str] = None
+    summary_description: Optional[str] = None
+    invoice_date: Optional[str] = None
+    billing_address: Optional[str] = None
+    shipping_address: Optional[str] = None
+    line_items: Optional[List[Dict[str, Any]]] = None
+    original_amount_inr: Optional[float] = None
     manual_payment_inr: Optional[float] = 0.0
 
 @app.put("/api/invoices/{invoice_id:path}")
@@ -541,6 +548,25 @@ async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
     inv.customer_name = req.customer_name
     inv.customer_phone = req.customer_phone
     inv.due_date = req.due_date
+
+    if req.line_items is not None:
+        inv.items = req.line_items
+
+    meta = inv.metadata or {}
+    if req.summary_description is not None:
+        meta["summary_description"] = req.summary_description
+    if req.invoice_date is not None:
+        meta["invoice_date"] = req.invoice_date
+    if req.billing_address is not None:
+        meta["billing_address"] = req.billing_address
+    if req.shipping_address is not None:
+        meta["shipping_address"] = req.shipping_address
+    inv.metadata = meta
+
+    if req.original_amount_inr is not None and req.original_amount_inr > 0:
+        new_orig_paise = inr_to_paise(req.original_amount_inr)
+        inv.original_amount_paise = new_orig_paise
+        inv.remaining_amount_paise = max(0, new_orig_paise - inv.paid_amount_paise)
 
     if req.manual_payment_inr and req.manual_payment_inr > 0:
         payment_paise = inr_to_paise(req.manual_payment_inr)
@@ -558,7 +584,7 @@ async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
 
         from backend.database import record_transaction
         record_transaction(
-            invoice_id=invoice_id,
+            invoice_id=inv.invoice_id,
             razorpay_payment_id=f"manual_{int(time.time())}",
             razorpay_payment_link_id=None,
             amount_paid_paise=actual_paid,
@@ -566,7 +592,7 @@ async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
         )
 
     upsert_invoice(inv)
-    await broadcast_sse_event("payment_reconciled", {"invoice_id": invoice_id})
+    await broadcast_sse_event("payment_reconciled", {"invoice_id": inv.invoice_id})
     return {"success": True, "invoice": inv}
 
 
@@ -828,6 +854,20 @@ async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
         f_url = r.get("file_url")
         has_doc = True if (f_url and f_url.strip()) else False
 
+        raw_items = r.get("items")
+        if isinstance(raw_items, str):
+            try:
+                raw_items = json.loads(raw_items)
+            except Exception:
+                pass
+
+        raw_meta = r.get("metadata")
+        if isinstance(raw_meta, str):
+            try:
+                raw_meta = json.loads(raw_meta)
+            except Exception:
+                pass
+
         invoices.append({
             "invoice_id": r["invoice_id"],
             "customer_name": r["customer_name"],
@@ -842,7 +882,9 @@ async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
             "status": r["status"],
             "requires_human_attention": r["requires_human_attention"],
             "has_document": has_doc,
-            "document_url": f_url
+            "document_url": f_url,
+            "items": raw_items,
+            "metadata": raw_meta
         })
     return invoices
 
@@ -860,7 +902,9 @@ async def get_invoice_detail(invoice_id: str):
         "paid_amount_inr": inv.paid_amount_inr,
         "remaining_amount_inr": inv.remaining_amount_inr,
         "due_date": inv.due_date,
-        "status": inv.status.value
+        "status": inv.status.value,
+        "items": inv.items,
+        "metadata": inv.metadata
     }
 
 @app.post("/api/invoices")
