@@ -526,34 +526,50 @@ export default function App() {
     if (!file) return;
     setIsExtracting(true);
     setExtractError(null);
-    const formData = new FormData();
-    formData.append('file', file);
-    try {
-      const res = await fetch(`${API_BASE}/api/invoices/extract`, {
-        method: 'POST',
-        body: formData
-      });
-      const json = await res.json();
-      if (json.success && json.data) {
-        setNewBillData(prev => ({
-          ...prev,
-          customer_name: json.data.customer_name || prev.customer_name,
-          customer_phone: json.data.customer_phone || prev.customer_phone,
-          original_amount_inr: json.data.original_amount_inr !== undefined ? json.data.original_amount_inr : prev.original_amount_inr,
-          due_date: json.data.due_date || prev.due_date,
-          file_bytes_b64: json.file_bytes_b64 || null,
-          file_name: json.file_name || null,
-          file_mime_type: json.file_mime_type || null
-        }));
-        showToast('✨ Bill details extracted successfully!', 'success');
-      } else {
-        setExtractError(json.error || 'Could not extract bill details automatically.');
+
+    // Read file locally immediately so file is always preserved for Supabase Storage
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const b64 = event.target.result.split(',')[1];
+      setNewBillData(prev => ({
+        ...prev,
+        file_name: file.name,
+        file_mime_type: file.type || 'application/pdf',
+        file_bytes_b64: b64
+      }));
+
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await fetch(`${API_BASE}/api/invoices/extract`, {
+          method: 'POST',
+          body: formData
+        });
+        const json = await res.json();
+        if (json.success && json.data) {
+          setNewBillData(prev => ({
+            ...prev,
+            customer_name: json.data.customer_name || prev.customer_name,
+            customer_phone: json.data.customer_phone || prev.customer_phone,
+            original_amount_inr: json.data.original_amount_inr !== undefined ? json.data.original_amount_inr : prev.original_amount_inr,
+            due_date: json.data.due_date || prev.due_date,
+            file_bytes_b64: json.file_bytes_b64 || b64,
+            file_name: json.file_name || file.name,
+            file_mime_type: json.file_mime_type || file.type,
+            items: json.data.line_items || null,
+            notes: json.data.notes || null
+          }));
+          showToast('✨ All bill details and itemized products extracted successfully!', 'success');
+        } else {
+          setExtractError(json.error || 'Could not auto-extract all fields. Please enter details manually below.');
+        }
+      } catch (err) {
+        setExtractError('AI extraction timed out. Please enter details manually below.');
+      } finally {
+        setIsExtracting(false);
       }
-    } catch (err) {
-      setExtractError('Extraction timed out. You can manually enter bill details below.');
-    } finally {
-      setIsExtracting(false);
-    }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleCreateBill = async (e) => {
@@ -578,7 +594,9 @@ export default function App() {
           due_date: newBillData.due_date,
           file_bytes_b64: newBillData.file_bytes_b64,
           file_name: newBillData.file_name,
-          file_mime_type: newBillData.file_mime_type
+          file_mime_type: newBillData.file_mime_type,
+          items: newBillData.items || null,
+          notes: newBillData.notes || null
         })
       });
 
@@ -592,7 +610,7 @@ export default function App() {
           due_date: new Date().toISOString().split('T')[0]
         });
         fetchData();
-        showToast(`Bill '${createdInv.invoice_id}' created successfully for ${createdInv.customer_name}!`, 'success');
+        showToast(`Bill '${createdInv.invoice_id}' created and saved to Supabase Storage for ${createdInv.customer_name}!`, 'success');
       }
     } catch (err) {
       showToast(`Failed to create bill: ${err.message}`, 'error');
@@ -1908,9 +1926,14 @@ export default function App() {
                         let cleanText = msg.text || '';
                         let attachedUrl = null;
 
+                        // Clean duplicate bracketed links like [https://rzp.io/...] (https://rzp.io/...)
+                        cleanText = cleanText.replace(/\[\s*(https?:\/\/rzp\.io\/[^\s\]\)]+)\s*\]\s*\(\s*(https?:\/\/rzp\.io\/[^\s\)]+)\s*\)/gi, '$1');
+                        // Remove bare rzp.io links from text since the interactive Pay button is rendered below
+                        cleanText = cleanText.replace(/https?:\/\/rzp\.io\/[^\s\)]+/gi, '').replace(/Please use this link to complete the [^:]+:\s*/i, '').trim();
+
                         if (urlMatch && !urlMatch[0].includes('rzp.io')) {
                           attachedUrl = urlMatch[0].startsWith('http') ? urlMatch[0] : `${API_BASE}${urlMatch[0]}`;
-                          cleanText = msg.text.replace(urlMatch[0], '').replace(/📄\s*You can view your invoice statement here:?\s*/i, '').trim();
+                          cleanText = cleanText.replace(urlMatch[0], '').replace(/📄\s*You can view your invoice statement here:?\s*/i, '').trim();
                         }
 
                         let mediaDocs = msg.metadata?.media_documents || [];

@@ -225,6 +225,9 @@ class CreateInvoiceRequest(BaseModel):
     file_bytes_b64: Optional[str] = None
     file_name: Optional[str] = None
     file_mime_type: Optional[str] = None
+    items: Optional[List[Dict[str, Any]]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
 
 class ChatResetRequest(BaseModel):
     session_id: str
@@ -579,19 +582,52 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
         base64_data = base64.b64encode(contents).decode("utf-8")
 
         prompt = """
-        You are an intelligent Document OCR Parser for Indian SME Invoices.
-        Extract the following fields from the provided invoice file:
+        You are an expert Document OCR and Financial Invoice Parser for Indian SMEs.
+        Extract EVERY single detail from this invoice document completely:
         - customer_name: Name of the SME or customer billed. (string)
-        - customer_phone: Phone number or WhatsApp number if listed (formatted like +91XXXXXXXXXX or string), or null if not found.
-        - original_amount_inr: Total invoice bill amount in INR as a numeric float.
-        - due_date: Invoice payment due date in YYYY-MM-DD format (string), or current date if not found.
+        - customer_phone: Phone number or WhatsApp number if listed (e.g. +91XXXXXXXXXX or string), or null if not found.
+        - customer_address: Address or location of the customer if present, or null.
+        - invoice_number: Invoice number or bill reference ID (string), or null.
+        - invoice_date: Invoice billing issue date (YYYY-MM-DD), or null.
+        - due_date: Invoice payment due date (YYYY-MM-DD), or current date if not found.
+        - subtotal_inr: Subtotal amount before tax in INR (float), or 0.0.
+        - tax_amount_inr: Total GST/VAT/Tax amount in INR (float), or 0.0.
+        - original_amount_inr: Total final payable bill amount in INR as a numeric float.
+        - line_items: A list of every item/service on the bill:
+            [
+              {
+                "item_description": "Name or description of product/service",
+                "quantity": 1,
+                "unit_price": 500.0,
+                "total_price": 500.0,
+                "hsn_code": "optional HSN code or null"
+              }
+            ]
+        - payment_terms: Any terms, bank details, or payment conditions mentioned (string or null).
+        - notes: Any special notes, remarks, or summary on the bill (string or null).
 
         Return ONLY a valid JSON object matching this schema:
         {
           "customer_name": "string",
           "customer_phone": "string or null",
+          "customer_address": "string or null",
+          "invoice_number": "string or null",
+          "invoice_date": "string or null",
+          "due_date": "YYYY-MM-DD",
+          "subtotal_inr": number,
+          "tax_amount_inr": number,
           "original_amount_inr": number,
-          "due_date": "YYYY-MM-DD"
+          "line_items": [
+            {
+              "item_description": "string",
+              "quantity": number,
+              "unit_price": number,
+              "total_price": number,
+              "hsn_code": "string or null"
+            }
+          ],
+          "payment_terms": "string or null",
+          "notes": "string or null"
         }
         """
 
@@ -619,7 +655,7 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
         }
 
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=35.0)
+            resp = requests.post(url, headers=headers, json=payload, timeout=75.0)
             if resp.status_code == 200:
                 res_json = resp.json()
                 text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -632,9 +668,21 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
                     "file_mime_type": mime_type
                 }
             else:
-                return {"success": False, "error": f"Gemini API error ({resp.status_code}). Please enter invoice details manually."}
+                return {
+                    "success": False,
+                    "error": f"Gemini API returned status {resp.status_code}. Please enter details manually below.",
+                    "file_bytes_b64": base64_data,
+                    "file_name": file.filename,
+                    "file_mime_type": mime_type
+                }
         except requests.exceptions.Timeout:
-            return {"success": False, "error": "AI extraction timed out due to network latency. Please enter details manually below."}
+            return {
+                "success": False,
+                "error": "AI extraction took longer than 75s due to file size. Please enter details manually below.",
+                "file_bytes_b64": base64_data,
+                "file_name": file.filename,
+                "file_mime_type": mime_type
+            }
     except Exception as e:
         return {"success": False, "error": "Could not parse document automatically. Please enter details manually below."}
 
@@ -829,7 +877,9 @@ async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends
         paid_amount_paise=0,
         remaining_amount_paise=paise_amount,
         due_date=req.due_date,
-        status=InvoiceStatus.UNPAID
+        status=InvoiceStatus.UNPAID,
+        items=req.items,
+        metadata=req.metadata or ({"notes": req.notes} if req.notes else None)
     )
 
     upsert_invoice(inv, merchant_id=merchant.merchant_id)

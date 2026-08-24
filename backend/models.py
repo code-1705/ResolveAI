@@ -55,6 +55,8 @@ class MasterInvoice:
     status: InvoiceStatus = InvoiceStatus.UNPAID
     requires_human_attention: bool = False
     file_url: Optional[str] = None
+    items: Optional[List[Dict[str, Any]]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
     @property
     def original_amount_inr(self) -> float:

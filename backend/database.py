@@ -112,6 +112,18 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    try:
+        cursor.execute("ALTER TABLE master_invoices ADD COLUMN items JSONB;")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cursor.execute("ALTER TABLE master_invoices ADD COLUMN metadata JSONB;")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoices_phone ON master_invoices(customer_phone);")
 
@@ -225,9 +237,11 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
     cursor = conn.cursor(cursor_factory=DictCursor)
     m_id = merchant_id or getattr(invoice, 'merchant_id', 'default_merchant') or 'default_merchant'
     f_url = getattr(invoice, 'file_url', None)
+    items_json = json.dumps(invoice.items) if getattr(invoice, 'items', None) else None
+    meta_json = json.dumps(invoice.metadata) if getattr(invoice, 'metadata', None) else None
     cursor.execute("""
-    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention, merchant_id, file_url)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention, merchant_id, file_url, items, metadata)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT(invoice_id) DO UPDATE SET
         customer_name=excluded.customer_name,
         customer_phone=excluded.customer_phone,
@@ -238,7 +252,9 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
         status=excluded.status,
         requires_human_attention=excluded.requires_human_attention,
         merchant_id=COALESCE(excluded.merchant_id, master_invoices.merchant_id),
-        file_url=COALESCE(excluded.file_url, master_invoices.file_url);
+        file_url=COALESCE(excluded.file_url, master_invoices.file_url),
+        items=COALESCE(excluded.items, master_invoices.items),
+        metadata=COALESCE(excluded.metadata, master_invoices.metadata);
     """, (
         invoice.invoice_id,
         invoice.customer_name,
@@ -250,11 +266,23 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
         invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status,
         invoice.requires_human_attention,
         m_id,
-        f_url
+        f_url,
+        items_json,
+        meta_json
     ))
     conn.commit()
     conn.close()
     return invoice
+
+def _parse_json_field(val):
+    if not val:
+        return None
+    if isinstance(val, (dict, list)):
+        return val
+    try:
+        return json.loads(val)
+    except Exception:
+        return None
 
 def get_invoice(invoice_id: str, ) -> Optional[MasterInvoice]:
     conn = get_connection()
@@ -263,17 +291,20 @@ def get_invoice(invoice_id: str, ) -> Optional[MasterInvoice]:
     row = cursor.fetchone()
     conn.close()
     if row:
+        r_dict = dict(row)
         return MasterInvoice(
-            invoice_id=row["invoice_id"],
-            customer_name=row["customer_name"],
-            customer_phone=row["customer_phone"],
-            original_amount_paise=row["original_amount_paise"],
-            paid_amount_paise=row["paid_amount_paise"],
-            remaining_amount_paise=row["remaining_amount_paise"],
-            due_date=row["due_date"],
-            status=InvoiceStatus(row["status"]),
-            requires_human_attention=bool(dict(row).get("requires_human_attention", False)),
-            file_url=dict(row).get("file_url")
+            invoice_id=r_dict["invoice_id"],
+            customer_name=r_dict["customer_name"],
+            customer_phone=r_dict["customer_phone"],
+            original_amount_paise=r_dict["original_amount_paise"],
+            paid_amount_paise=r_dict["paid_amount_paise"],
+            remaining_amount_paise=r_dict["remaining_amount_paise"],
+            due_date=r_dict["due_date"],
+            status=InvoiceStatus(r_dict["status"]),
+            requires_human_attention=bool(r_dict.get("requires_human_attention", False)),
+            file_url=r_dict.get("file_url"),
+            items=_parse_json_field(r_dict.get("items")),
+            metadata=_parse_json_field(r_dict.get("metadata"))
         )
     return None
 
@@ -283,20 +314,26 @@ def get_invoices_by_phone(phone: str, ) -> List[MasterInvoice]:
     cursor.execute("SELECT * FROM master_invoices WHERE customer_phone = %s;", (phone,))
     rows = cursor.fetchall()
     conn.close()
-    return [
-        MasterInvoice(
-            invoice_id=r["invoice_id"],
-            customer_name=r["customer_name"],
-            customer_phone=r["customer_phone"],
-            original_amount_paise=r["original_amount_paise"],
-            paid_amount_paise=r["paid_amount_paise"],
-            remaining_amount_paise=r["remaining_amount_paise"],
-            due_date=r["due_date"],
-            status=InvoiceStatus(r["status"]),
-            requires_human_attention=bool(dict(r).get("requires_human_attention", False)),
-            file_url=dict(r).get("file_url")
-        ) for r in rows
-    ]
+    res = []
+    for r in rows:
+        r_dict = dict(r)
+        res.append(
+            MasterInvoice(
+                invoice_id=r_dict["invoice_id"],
+                customer_name=r_dict["customer_name"],
+                customer_phone=r_dict["customer_phone"],
+                original_amount_paise=r_dict["original_amount_paise"],
+                paid_amount_paise=r_dict["paid_amount_paise"],
+                remaining_amount_paise=r_dict["remaining_amount_paise"],
+                due_date=r_dict["due_date"],
+                status=InvoiceStatus(r_dict["status"]),
+                requires_human_attention=bool(r_dict.get("requires_human_attention", False)),
+                file_url=r_dict.get("file_url"),
+                items=_parse_json_field(r_dict.get("items")),
+                metadata=_parse_json_field(r_dict.get("metadata"))
+            )
+        )
+    return res
 
 def update_invoice_status(invoice_id: str, new_status: str, ) -> MasterInvoice:
     invoice = get_invoice(invoice_id, )
