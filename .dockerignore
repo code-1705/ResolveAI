@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+frontend/node_modules/
+frontend/dist/
+.git/
+.gitignore
+.agents/
+.gemini/
+.env.local
+*.log
