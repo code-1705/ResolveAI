@@ -231,10 +231,18 @@ export default function App() {
 
 
   const [newBillData, setNewBillData] = useState({
+    invoice_number: '',
+    summary_description: '',
     customer_name: '',
     customer_phone: '',
-    original_amount_inr: '',
+    invoice_date: new Date().toISOString().split('T')[0],
     due_date: new Date().toISOString().split('T')[0],
+    billing_address: '',
+    shipping_address: '',
+    line_items: [
+      { description: '', rate: '', quantity: 1, total: 0 }
+    ],
+    original_amount_inr: '',
     file_bytes_b64: null,
     file_name: null,
     file_mime_type: null
@@ -520,6 +528,46 @@ export default function App() {
     }
   };
 
+  const roundTo2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
+
+  const handleAddLineItem = () => {
+    setNewBillData(prev => ({
+      ...prev,
+      line_items: [...(prev.line_items || []), { description: '', rate: '', quantity: 1, total: 0 }]
+    }));
+  };
+
+  const handleRemoveLineItem = (index) => {
+    setNewBillData(prev => {
+      const updated = (prev.line_items || []).filter((_, i) => i !== index);
+      const newTotal = updated.reduce((acc, curr) => acc + (parseFloat(curr.total) || 0), 0);
+      return {
+        ...prev,
+        line_items: updated.length > 0 ? updated : [{ description: '', rate: '', quantity: 1, total: 0 }],
+        original_amount_inr: newTotal > 0 ? newTotal.toFixed(2) : prev.original_amount_inr
+      };
+    });
+  };
+
+  const handleLineItemChange = (index, field, value) => {
+    setNewBillData(prev => {
+      const updated = [...(prev.line_items || [])];
+      const row = { ...updated[index], [field]: value };
+      if (field === 'rate' || field === 'quantity') {
+        const r = parseFloat(field === 'rate' ? value : row.rate) || 0;
+        const q = parseFloat(field === 'quantity' ? value : row.quantity) || 0;
+        row.total = roundTo2(r * q);
+      }
+      updated[index] = row;
+      const sumTotal = updated.reduce((acc, curr) => acc + (parseFloat(curr.total) || 0), 0);
+      return {
+        ...prev,
+        line_items: updated,
+        original_amount_inr: sumTotal > 0 ? sumTotal.toFixed(2) : prev.original_amount_inr
+      };
+    });
+  };
+
   // Create bill submission handler
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -547,19 +595,38 @@ export default function App() {
         });
         const json = await res.json();
         if (json.success && json.data) {
+          const rawItems = json.data.line_items || [];
+          const normalizedItems = rawItems.length > 0 ? rawItems.map(item => {
+            const r = parseFloat(item.rate || item.unit_price) || 0;
+            const q = parseFloat(item.quantity || item.qty) || 1;
+            return {
+              description: item.description || item.item_description || '',
+              rate: r > 0 ? r : '',
+              quantity: q,
+              total: roundTo2((r || 0) * (q || 1))
+            };
+          }) : [{ description: '', rate: '', quantity: 1, total: 0 }];
+
+          const computedSum = normalizedItems.reduce((acc, curr) => acc + (parseFloat(curr.total) || 0), 0);
+          const finalTotal = json.data.total_amount_inr || json.data.original_amount_inr || (computedSum > 0 ? computedSum : undefined);
+
           setNewBillData(prev => ({
             ...prev,
+            invoice_number: json.data.invoice_number || prev.invoice_number,
+            summary_description: json.data.summary_description || json.data.notes || prev.summary_description,
             customer_name: json.data.customer_name || prev.customer_name,
             customer_phone: json.data.customer_phone || prev.customer_phone,
-            original_amount_inr: json.data.original_amount_inr !== undefined ? json.data.original_amount_inr : prev.original_amount_inr,
+            invoice_date: json.data.invoice_date || prev.invoice_date,
             due_date: json.data.due_date || prev.due_date,
+            billing_address: json.data.billing_address || prev.billing_address,
+            shipping_address: json.data.shipping_address || prev.shipping_address,
+            line_items: normalizedItems,
+            original_amount_inr: finalTotal !== undefined ? finalTotal : prev.original_amount_inr,
             file_bytes_b64: json.file_bytes_b64 || b64,
             file_name: json.file_name || file.name,
-            file_mime_type: json.file_mime_type || file.type,
-            items: json.data.line_items || null,
-            notes: json.data.notes || null
+            file_mime_type: json.file_mime_type || file.type
           }));
-          showToast('✨ All bill details and itemized products extracted successfully!', 'success');
+          showToast('✨ All bill details, addresses, and line items extracted successfully!', 'success');
         } else {
           setExtractError(json.error || 'Could not auto-extract all fields. Please enter details manually below.');
         }
@@ -592,11 +659,15 @@ export default function App() {
           customer_phone: newBillData.customer_phone,
           original_amount_inr: parseFloat(newBillData.original_amount_inr),
           due_date: newBillData.due_date,
+          invoice_number: newBillData.invoice_number || null,
+          summary_description: newBillData.summary_description || null,
+          invoice_date: newBillData.invoice_date || null,
+          billing_address: newBillData.billing_address || null,
+          shipping_address: newBillData.shipping_address || null,
+          line_items: newBillData.line_items || null,
           file_bytes_b64: newBillData.file_bytes_b64,
           file_name: newBillData.file_name,
-          file_mime_type: newBillData.file_mime_type,
-          items: newBillData.items || null,
-          notes: newBillData.notes || null
+          file_mime_type: newBillData.file_mime_type
         })
       });
 
@@ -604,10 +675,21 @@ export default function App() {
         const createdInv = await res.json();
         setIsCreateModalOpen(false);
         setNewBillData({
+          invoice_number: '',
+          summary_description: '',
           customer_name: '',
           customer_phone: '',
+          invoice_date: new Date().toISOString().split('T')[0],
+          due_date: new Date().toISOString().split('T')[0],
+          billing_address: '',
+          shipping_address: '',
+          line_items: [
+            { description: '', rate: '', quantity: 1, total: 0 }
+          ],
           original_amount_inr: '',
-          due_date: new Date().toISOString().split('T')[0]
+          file_bytes_b64: null,
+          file_name: null,
+          file_mime_type: null
         });
         fetchData();
         showToast(`Bill '${createdInv.invoice_id}' created and saved to Supabase Storage for ${createdInv.customer_name}!`, 'success');
@@ -1945,7 +2027,7 @@ export default function App() {
                             mediaDocs = bills.map(b => ({
                               invoice_id: b.invoice_id,
                               filename: `${b.invoice_id}_bill.pdf`,
-                              url: `/api/invoices/${b.invoice_id}/document?customer_phone=${encodeURIComponent(activeCustomer?.customer_phone || selectedPhone || '')}`
+                              url: b.document_url || b.file_url || `/api/invoices/${encodeURIComponent(b.invoice_id)}/document?customer_phone=${encodeURIComponent(activeCustomer?.customer_phone || selectedPhone || '')}`
                             }));
                           }
                         }
@@ -2337,7 +2419,9 @@ export default function App() {
         }}>
           <div style={{
             width: '100%',
-            maxWidth: '540px',
+            maxWidth: '760px',
+            maxHeight: '90vh',
+            overflowY: 'auto',
             padding: '32px',
             borderRadius: '16px',
             background: '#FFFFFF',
@@ -2347,7 +2431,7 @@ export default function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <div>
                 <h2 style={{ fontSize: '1.4rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '4px' }}>Add New Invoice</h2>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Upload a bill or enter customer details to initiate outreach</p>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Upload an invoice bill to auto-extract or enter details manually</p>
               </div>
               <button
                 onClick={() => setIsCreateModalOpen(false)}
@@ -2381,7 +2465,7 @@ export default function App() {
               />
               {isExtracting ? (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: 'var(--primary)', fontWeight: '600', fontSize: '0.9rem' }}>
-                  <span>✨</span> Reading and extracting your invoice bill...
+                  <span>✨</span> Reading and extracting all line items, dates & amounts...
                 </div>
               ) : extractError ? (
                 <div>
@@ -2389,7 +2473,7 @@ export default function App() {
                     ⚠️ {extractError}
                   </p>
                   <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Click here to upload another PDF or image file.
+                    You can edit and fill details below, or click here to upload another file.
                   </p>
                 </div>
               ) : newBillData.file_name ? (
@@ -2401,7 +2485,7 @@ export default function App() {
                         {newBillData.file_name}
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--success)', fontWeight: '500' }}>
-                        ✓ Document Attached & Auto-Extracted
+                        ✓ Document Attached & Line Items Auto-Extracted
                       </div>
                     </div>
                   </div>
@@ -2415,7 +2499,7 @@ export default function App() {
                     📁 Step 1: Upload Invoice File (Required)
                   </p>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Upload a PDF or Image invoice. We will automatically extract Name, Amount, Due Date & Phone.
+                    Upload a PDF or Image invoice. We will automatically extract Line Items, Rates, Addresses & Dates.
                   </p>
                 </div>
               )}
@@ -2429,109 +2513,233 @@ export default function App() {
             )}
 
             {newBillData.file_name && (
-              <form onSubmit={handleCreateBill} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Step 2: Review & Edit Extracted Details
+              <form onSubmit={handleCreateBill} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Step 2: Review & Edit Extracted Invoice
                 </div>
 
+                {/* Top Row: Invoice # and Brief Description */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '14px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                      Invoice #
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. INV-2026-001"
+                      value={newBillData.invoice_number}
+                      onChange={(e) => setNewBillData({ ...newBillData, invoice_number: e.target.value })}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                      Brief Description / Summary
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Monthly Server Maintenance & Cloud Retainer"
+                      value={newBillData.summary_description}
+                      onChange={(e) => setNewBillData({ ...newBillData, summary_description: e.target.value })}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                    />
+                  </div>
+                </div>
+
+                {/* 2-Column Section: Billing Details & Addresses */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px', padding: '16px', background: 'var(--bg-dark)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                  {/* Left Column: Customer & Dates */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                        Billing To (Customer Name) *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Rajesh Enterprises"
+                        value={newBillData.customer_name}
+                        onChange={(e) => setNewBillData({ ...newBillData, customer_name: e.target.value })}
+                        style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                        Customer WhatsApp Phone *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. +919812345678"
+                        value={newBillData.customer_phone}
+                        onChange={(e) => setNewBillData({ ...newBillData, customer_phone: e.target.value })}
+                        style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.88rem' }}
+                        required
+                      />
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                          Issue Date
+                        </label>
+                        <input
+                          type="date"
+                          value={newBillData.invoice_date}
+                          onChange={(e) => setNewBillData({ ...newBillData, invoice_date: e.target.value })}
+                          style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.82rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                          Expiry / Due Date *
+                        </label>
+                        <input
+                          type="date"
+                          value={newBillData.due_date}
+                          onChange={(e) => setNewBillData({ ...newBillData, due_date: e.target.value })}
+                          style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.82rem' }}
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Billing & Shipping Addresses */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                        Billing Address
+                      </label>
+                      <textarea
+                        rows="2"
+                        placeholder="Enter full registered billing address..."
+                        value={newBillData.billing_address}
+                        onChange={(e) => setNewBillData({ ...newBillData, billing_address: e.target.value })}
+                        style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.85rem', resize: 'vertical' }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: '600', color: 'var(--text-main)', marginBottom: '5px' }}>
+                        Shipping Address
+                      </label>
+                      <textarea
+                        rows="2"
+                        placeholder="Enter delivery or shipping address..."
+                        value={newBillData.shipping_address}
+                        onChange={(e) => setNewBillData({ ...newBillData, shipping_address: e.target.value })}
+                        style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', background: '#FFF', border: '1px solid var(--border-color)', color: 'var(--text-main)', fontSize: '0.85rem', resize: 'vertical' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Line Items Table */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                    Customer / SME Name *
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Rajesh Enterprises"
-                    value={newBillData.customer_name}
-                    onChange={(e) => setNewBillData({ ...newBillData, customer_name: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      background: '#FFF',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.9rem'
-                    }}
-                    required
-                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <label style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                      Itemized Line Items
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleAddLineItem}
+                      style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.82rem', fontWeight: '600', cursor: 'pointer' }}
+                    >
+                      + Add Line Item
+                    </button>
+                  </div>
+
+                  <div style={{ border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden', background: '#FFF' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.84rem' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--bg-dark)', borderBottom: '1px solid var(--border-color)', textAlign: 'left', color: 'var(--text-muted)' }}>
+                          <th style={{ padding: '8px 12px', fontWeight: '600' }}>DESCRIPTION</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '600', width: '130px' }}>RATE/ITEM (₹)</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '600', width: '80px' }}>QTY</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '600', width: '130px', textAlign: 'right' }}>TOTAL (₹)</th>
+                          <th style={{ padding: '8px 8px', width: '40px', textAlign: 'center' }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(newBillData.line_items || []).map((item, idx) => (
+                          <tr key={idx} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                            <td style={{ padding: '8px 10px' }}>
+                              <input
+                                type="text"
+                                placeholder="Select or enter item description"
+                                value={item.description}
+                                onChange={(e) => handleLineItemChange(idx, 'description', e.target.value)}
+                                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.84rem' }}
+                              />
+                            </td>
+                            <td style={{ padding: '8px 10px' }}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                placeholder="0.00"
+                                value={item.rate}
+                                onChange={(e) => handleLineItemChange(idx, 'rate', e.target.value)}
+                                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.84rem' }}
+                              />
+                            </td>
+                            <td style={{ padding: '8px 10px' }}>
+                              <input
+                                type="number"
+                                min="1"
+                                value={item.quantity}
+                                onChange={(e) => handleLineItemChange(idx, 'quantity', e.target.value)}
+                                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.84rem' }}
+                              />
+                            </td>
+                            <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: '600', color: 'var(--text-main)' }}>
+                              ₹{parseFloat(item.total || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveLineItem(idx)}
+                                style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.9rem' }}
+                                title="Remove line item"
+                              >
+                                ✕
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                    WhatsApp Phone Number *
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. +919812345678"
-                    value={newBillData.customer_phone}
-                    onChange={(e) => setNewBillData({ ...newBillData, customer_phone: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      background: '#FFF',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.9rem'
-                    }}
-                    required
-                  />
+                {/* Total Amount Summary Header */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '16px', padding: '14px 18px', background: 'var(--bg-dark)', borderRadius: '10px', border: '1px solid var(--border-color)', marginTop: '4px' }}>
+                  <span style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-main)' }}>
+                    Total Amount:
+                  </span>
+                  <span style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>
+                    ₹{parseFloat(newBillData.original_amount_inr || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </span>
                 </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                    Original Invoice Amount (₹ INR) *
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="e.g. 75000"
-                    step="0.01"
-                    value={newBillData.original_amount_inr}
-                    onChange={(e) => setNewBillData({ ...newBillData, original_amount_inr: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      background: '#FFF',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.9rem'
-                    }}
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: '500', color: 'var(--text-main)', marginBottom: '6px' }}>
-                    Payment Due Date *
-                  </label>
-                  <input
-                    type="date"
-                    value={newBillData.due_date}
-                    onChange={(e) => setNewBillData({ ...newBillData, due_date: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      background: '#FFF',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.9rem'
-                    }}
-                    required
-                  />
-                </div>
-
-                <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
                   <button
                     type="button"
                     onClick={() => {
                       setIsCreateModalOpen(false);
                       setNewBillData({
+                        invoice_number: '',
+                        summary_description: '',
                         customer_name: '',
                         customer_phone: '',
-                        original_amount_inr: '',
+                        invoice_date: new Date().toISOString().split('T')[0],
                         due_date: new Date().toISOString().split('T')[0],
+                        billing_address: '',
+                        shipping_address: '',
+                        line_items: [
+                          { description: '', rate: '', quantity: 1, total: 0 }
+                        ],
+                        original_amount_inr: '',
                         file_bytes_b64: null,
                         file_name: null,
                         file_mime_type: null
@@ -2553,18 +2761,17 @@ export default function App() {
                   </button>
                   <button
                     type="submit"
-                    disabled={isExtracting}
                     style={{
                       flex: 2,
                       padding: '12px',
                       borderRadius: '8px',
-                      background: 'var(--text-main)',
+                      background: 'var(--primary)',
                       color: '#FFF',
                       border: 'none',
                       cursor: 'pointer',
-                      fontWeight: '500',
+                      fontWeight: '600',
                       fontSize: '0.88rem',
-                      opacity: isExtracting ? 0.6 : 1
+                      boxShadow: '0 2px 8px rgba(218, 119, 86, 0.25)'
                     }}
                   >
                     Create Invoice Bill

@@ -222,12 +222,18 @@ class CreateInvoiceRequest(BaseModel):
     customer_phone: str
     original_amount_inr: float
     due_date: str
-    file_bytes_b64: Optional[str] = None
-    file_name: Optional[str] = None
-    file_mime_type: Optional[str] = None
+    invoice_number: Optional[str] = None
+    summary_description: Optional[str] = None
+    invoice_date: Optional[str] = None
+    billing_address: Optional[str] = None
+    shipping_address: Optional[str] = None
+    line_items: Optional[List[Dict[str, Any]]] = None
     items: Optional[List[Dict[str, Any]]] = None
     metadata: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
+    file_bytes_b64: Optional[str] = None
+    file_name: Optional[str] = None
+    file_mime_type: Optional[str] = None
 
 class ChatResetRequest(BaseModel):
     session_id: str
@@ -525,10 +531,10 @@ class EditInvoiceRequest(BaseModel):
     due_date: str
     manual_payment_inr: Optional[float] = 0.0
 
-@app.put("/api/invoices/{invoice_id}")
+@app.put("/api/invoices/{invoice_id:path}")
 async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
     """Allows merchants to edit invoice details or record manual off-platform payments (cash/UPI/cheque)."""
-    inv = get_invoice(invoice_id)
+    inv = get_invoice(invoice_id) or get_invoice(invoice_id.replace('/', '_')) or get_invoice(invoice_id.replace('_', '/'))
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
@@ -582,52 +588,46 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
         base64_data = base64.b64encode(contents).decode("utf-8")
 
         prompt = """
-        You are an expert Document OCR and Financial Invoice Parser for Indian SMEs.
-        Extract EVERY single detail from this invoice document completely:
-        - customer_name: Name of the SME or customer billed. (string)
-        - customer_phone: Phone number or WhatsApp number if listed (e.g. +91XXXXXXXXXX or string), or null if not found.
-        - customer_address: Address or location of the customer if present, or null.
-        - invoice_number: Invoice number or bill reference ID (string), or null.
-        - invoice_date: Invoice billing issue date (YYYY-MM-DD), or null.
-        - due_date: Invoice payment due date (YYYY-MM-DD), or current date if not found.
-        - subtotal_inr: Subtotal amount before tax in INR (float), or 0.0.
-        - tax_amount_inr: Total GST/VAT/Tax amount in INR (float), or 0.0.
-        - original_amount_inr: Total final payable bill amount in INR as a numeric float.
-        - line_items: A list of every item/service on the bill:
+        You are an expert Document OCR and Financial Invoice Parser.
+        Extract the following fields from the invoice document:
+        - invoice_number: The official invoice number or bill reference ID (string or null).
+        - summary_description: A brief summary or description of the project/bill (string or null).
+        - customer_name: Name of the customer/SME billed (string).
+        - customer_phone: WhatsApp or Phone number if listed (string or null).
+        - invoice_date: Issue date (YYYY-MM-DD or null).
+        - due_date: Expiry or Payment due date (YYYY-MM-DD, or current date if not found).
+        - billing_address: Full billing address of the customer (string or null).
+        - shipping_address: Full shipping/delivery address (string or null).
+        - line_items: A list of every item/service row:
             [
               {
-                "item_description": "Name or description of product/service",
+                "description": "Item description or product/service name",
+                "rate": 500.0,
                 "quantity": 1,
-                "unit_price": 500.0,
-                "total_price": 500.0,
-                "hsn_code": "optional HSN code or null"
+                "total": 500.0
               }
             ]
-        - payment_terms: Any terms, bank details, or payment conditions mentioned (string or null).
-        - notes: Any special notes, remarks, or summary on the bill (string or null).
+        - total_amount_inr: Total payable invoice amount in INR as a numeric float.
 
         Return ONLY a valid JSON object matching this schema:
         {
+          "invoice_number": "string or null",
+          "summary_description": "string or null",
           "customer_name": "string",
           "customer_phone": "string or null",
-          "customer_address": "string or null",
-          "invoice_number": "string or null",
-          "invoice_date": "string or null",
+          "invoice_date": "YYYY-MM-DD or null",
           "due_date": "YYYY-MM-DD",
-          "subtotal_inr": number,
-          "tax_amount_inr": number,
-          "original_amount_inr": number,
+          "billing_address": "string or null",
+          "shipping_address": "string or null",
           "line_items": [
             {
-              "item_description": "string",
+              "description": "string",
+              "rate": number,
               "quantity": number,
-              "unit_price": number,
-              "total_price": number,
-              "hsn_code": "string or null"
+              "total": number
             }
           ],
-          "payment_terms": "string or null",
-          "notes": "string or null"
+          "total_amount_inr": number
         }
         """
 
@@ -729,18 +729,25 @@ def generate_simple_invoice_pdf(invoice_id: str, customer_name: str, amount_inr:
     return pdf_template
 
 
-@app.get("/api/invoices/{invoice_id}/document")
+@app.get("/api/invoices/{invoice_id:path}/document")
 async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(..., alias="customer_phone")):
     """Streams invoice PDF document from Supabase CDN or generates dynamic standard PDF with strict phone verification."""
     from psycopg2.extras import DictCursor
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
-    cursor.execute("SELECT customer_phone, file_url, customer_name, remaining_amount_paise, due_date FROM master_invoices WHERE invoice_id = %s;", (invoice_id,))
+    cursor.execute(
+        """
+        SELECT customer_phone, file_url, customer_name, remaining_amount_paise, due_date 
+        FROM master_invoices 
+        WHERE invoice_id = %s OR invoice_id = %s OR invoice_id = %s;
+        """,
+        (invoice_id, invoice_id.replace('/', '_'), invoice_id.replace('_', '/'))
+    )
     row = cursor.fetchone()
     conn.close()
 
     if not row:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found.")
 
     import re
     clean_db = re.sub(r'\D', '', row["customer_phone"])
@@ -839,10 +846,10 @@ async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
         })
     return invoices
 
-@app.get("/api/invoices/{invoice_id}")
+@app.get("/api/invoices/{invoice_id:path}")
 async def get_invoice_detail(invoice_id: str):
     """Returns detailed information for a single invoice."""
-    inv = get_invoice(invoice_id)
+    inv = get_invoice(invoice_id) or get_invoice(invoice_id.replace('/', '_')) or get_invoice(invoice_id.replace('_', '/'))
     if not inv:
         raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found.")
     return {
@@ -866,8 +873,20 @@ async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends
     conn.close()
 
     prefix = merchant.merchant_id[:6] if len(merchant.merchant_id) >= 6 else "SME"
-    invoice_id = f"inv_{prefix}_{count + 1:03d}"
+    invoice_id = req.invoice_number if (req.invoice_number and len(req.invoice_number.strip()) > 0) else f"inv_{prefix}_{count + 1:03d}"
     paise_amount = inr_to_paise(req.original_amount_inr)
+
+    meta_dict = req.metadata or {}
+    if req.summary_description:
+        meta_dict["summary_description"] = req.summary_description
+    if req.invoice_date:
+        meta_dict["invoice_date"] = req.invoice_date
+    if req.billing_address:
+        meta_dict["billing_address"] = req.billing_address
+    if req.shipping_address:
+        meta_dict["shipping_address"] = req.shipping_address
+    if req.notes:
+        meta_dict["notes"] = req.notes
 
     inv = MasterInvoice(
         invoice_id=invoice_id,
@@ -878,8 +897,8 @@ async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends
         remaining_amount_paise=paise_amount,
         due_date=req.due_date,
         status=InvoiceStatus.UNPAID,
-        items=req.items,
-        metadata=req.metadata or ({"notes": req.notes} if req.notes else None)
+        items=req.line_items or req.items,
+        metadata=meta_dict if meta_dict else None
     )
 
     upsert_invoice(inv, merchant_id=merchant.merchant_id)
