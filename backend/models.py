@@ -28,7 +28,7 @@ class Merchant:
     bank_name: Optional[str] = None
     upi_id: Optional[str] = None
     pan_number: Optional[str] = None
-    commission_pct: float = 1.0
+    commission_pct: float = 3.0
     settlement_status: str = "ACTIVE"
     password_hash: Optional[str] = None
     razorpay_account_id: Optional[str] = None

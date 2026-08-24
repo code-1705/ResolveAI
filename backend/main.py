@@ -1,3 +1,4 @@
+from backend.storage import upload_to_supabase_storage
 import jwt
 from backend.auth import get_current_merchant, require_verified_merchant_bank
 from backend.models import Merchant
@@ -36,6 +37,7 @@ from backend.database import (
 )
 from backend.guardrails import GuardrailEngine, paise_to_inr, inr_to_paise
 from backend.razorpay_client import razorpay_client
+from backend.whatsapp_client import whatsapp_client
 from backend.webhooks import verify_meta_webhook, process_whatsapp_webhook, reconcile_payment_event
 from backend.agent import agentic_negotiator
 from backend.session_manager import session_manager
@@ -54,7 +56,7 @@ async def broadcast_sse_event(event_type: str, data: Dict[str, Any]):
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# --- Active Reconciliation Cron ---
+# --- Active Reconciliation & Due Date Reminders Cron ---
 scheduler = AsyncIOScheduler()
 
 @scheduler.scheduled_job('interval', minutes=15)
@@ -103,6 +105,68 @@ async def active_reconciliation_job():
         print("[Cron] Active Reconciliation Complete.")
     except Exception as e:
         print(f"[Cron] Active Reconciliation Failed: {e}")
+
+@scheduler.scheduled_job('interval', hours=1)
+async def check_due_date_reminders_job():
+    """
+    Automated Background Cron: Checks for invoices due today or overdue,
+    and automatically dispatches WhatsApp reminder messages with invoice attachments to buyers.
+    """
+    import datetime
+    try:
+        print("[Cron] Checking for Due & Overdue Invoices to dispatch WhatsApp reminders...")
+        today_str = datetime.date.today().isoformat()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT invoice_id, customer_name, customer_phone, remaining_amount_paise, due_date, status, file_url
+            FROM master_invoices
+            WHERE due_date <= %s AND status IN ('UNPAID', 'NEGOTIATING');
+        """, (today_str,))
+        rows = cur.fetchall()
+        conn.close()
+
+        reminders_sent = 0
+        for r in rows:
+            inv_id, cust_name, phone, rem_paise, due_date, status, file_url = r
+            rem_inr = rem_paise / 100.0
+            due_verb = "was due on" if due_date < today_str else "is due TODAY on"
+            
+            doc_link = f"/api/invoices/{inv_id}/document?customer_phone={phone}"
+            media_docs = [{
+                "invoice_id": inv_id,
+                "filename": f"{inv_id}_bill.pdf",
+                "url": doc_link
+            }]
+            reminder_text = (
+                f"⏰ *Payment Reminder:* Hi {cust_name}! This is a reminder regarding Invoice `{inv_id}` "
+                f"for *₹{rem_inr:,.2f}*, which {due_verb} {due_date}.\n\n"
+                "We have attached your official invoice bill statement below for your review. "
+                "Please let us know if you need any assistance or options to settle your account today."
+            )
+            
+            try:
+                whatsapp_client.send_text_message(phone, f"{reminder_text}\n\nInvoice Bill: {doc_link}")
+                session_manager.add_message(
+                    phone,
+                    "agent",
+                    reminder_text,
+                    metadata={
+                        "outbound_due_date_reminder": True,
+                        "invoice_id": inv_id,
+                        "media_documents": media_docs
+                    }
+                )
+                reminders_sent += 1
+                print(f"[Cron Due Date Reminder Sent]: Invoice {inv_id} -> {phone}")
+            except Exception as send_err:
+                print(f"[Cron Due Date Reminder Error] Invoice {inv_id}: {send_err}")
+                
+        print(f"[Cron] Due Date Reminders Check Complete. Total sent: {reminders_sent}")
+        return {"status": "success", "reminders_sent": reminders_sent}
+    except Exception as e:
+        print(f"[Cron] Due Date Reminders Check Failed: {e}")
+        return {"status": "error", "error": str(e)}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -204,7 +268,7 @@ async def sse_events_endpoint(request: Request):
 
 
 
-# --- Merchant Direct Bank Settlement & 1% Platform Commission Routes ---
+# --- Merchant Direct Bank Settlement & 3% Platform Commission Routes ---
 class BankSettlementUpdateRequest(BaseModel):
     bank_beneficiary_name: str
     bank_account_number: str
@@ -222,7 +286,7 @@ async def get_merchant_settlement_ledger_history(merchant: Merchant = Depends(ge
 
 @app.get("/api/merchant/bank-settlement")
 async def get_merchant_bank_settlement_config(merchant: Merchant = Depends(get_current_merchant)):
-    """Returns the authenticated merchant's configured bank settlement details & 1% platform fee structure."""
+    """Returns the authenticated merchant's configured bank settlement details & 3% platform fee structure."""
     m = get_merchant_by_id(merchant.merchant_id) or merchant
     acc = m.bank_account_number or ""
     masked_acc = f"••••••••{acc[-4:]}" if len(acc) >= 4 else (acc or "Not Configured")
@@ -237,16 +301,16 @@ async def get_merchant_bank_settlement_config(merchant: Merchant = Depends(get_c
         "bank_name": m.bank_name or "",
         "upi_id": m.upi_id or "",
         "pan_number": m.pan_number or "",
-        "commission_pct": getattr(m, 'commission_pct', 1.0) or 1.0,
-        "settlement_payout_pct": 100.0 - (getattr(m, 'commission_pct', 1.0) or 1.0),
-        "settlement_cycle": "Direct Bank Settlement (T+1 Days)",
+        "commission_pct": getattr(m, 'commission_pct', 3.0) or 3.0,
+        "settlement_payout_pct": 100.0 - (getattr(m, 'commission_pct', 3.0) or 3.0),
+        "settlement_cycle": "Instant Direct Settlement (Real-Time)",
         "settlement_status": getattr(m, 'settlement_status', 'ACTIVE') or 'ACTIVE',
-        "gateway_mode": "Resolve.ai Master Platform Gateway (Auto 1% Split)"
+        "gateway_mode": "Resolve.ai Master Platform Gateway (Auto 3% Split)"
     }
 
 @app.post("/api/merchant/bank-settlement")
 async def save_merchant_bank_settlement_config(req: BankSettlementUpdateRequest, merchant: Merchant = Depends(get_current_merchant)):
-    """Saves or updates merchant bank settlement details for direct 99% automated payout."""
+    """Saves or updates merchant bank settlement details for direct 97% automated payout."""
     if not req.bank_account_number.strip() or len(req.bank_account_number.strip()) < 8:
         raise HTTPException(status_code=400, detail="Invalid bank account number (minimum 8 digits required)")
     
@@ -263,7 +327,7 @@ async def save_merchant_bank_settlement_config(req: BankSettlementUpdateRequest,
         pan_number=req.pan_number
     )
     
-    # Automatically provision / link Razorpay Route Linked Account for 99% payouts
+    # Automatically provision / link Razorpay Route Linked Account for 97% payouts
     try:
         rzp_acc = razorpay_client.create_linked_account(
             business_name=req.bank_beneficiary_name,
@@ -635,8 +699,20 @@ async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(.
     remaining_inr = paise_to_inr(row.get("remaining_amount_paise", 0))
     due_date = row.get("due_date", "")
 
-    # 1. Check Supabase Storage bucket 'resolveai-invoices' for authenticated file
-    if file_url:
+    # 1. Check if original document file exists in Supabase Storage or CDN
+    if file_url and file_url.strip():
+        if file_url.startswith("http://") or file_url.startswith("https://"):
+            try:
+                cdn_res = requests.get(file_url, timeout=5.0)
+                if cdn_res.status_code == 200:
+                    return Response(
+                        content=cdn_res.content,
+                        media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{invoice_id}_bill.pdf"'}
+                    )
+            except Exception as e:
+                print(f"[CDN Fetch Error]: {e}")
+
         target_filename = file_url.split("/")[-1]
         supabase_url = f"{settings.SUPABASE_URL}/storage/v1/object/authenticated/resolveai-invoices/{target_filename}"
         headers = {
@@ -779,101 +855,11 @@ async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends
     return res
 
 
-def generate_simple_invoice_pdf(invoice_id: str, customer_name: str, amount_inr: float, due_date: str) -> bytes:
-    """Generates a standard compliant 1-page PDF document in pure Python with zero dependencies."""
-    text_lines = [
-        f"RESOLVE.AI - OFFICIAL INVOICE STATEMENT",
-        f"========================================",
-        f"Invoice ID:    {invoice_id}",
-        f"Customer Name: {customer_name}",
-        f"Amount Due:    INR {amount_inr:,.2f}",
-        f"Due Date:      {due_date}",
-        f"Status:        OUTSTANDING / UNPAID",
-        f"",
-        f"Payment Terms: Immediate via Razorpay",
-        f"Thank you for your prompt business with us."
-    ]
-    
-    stream_content = "BT\n/F1 14 Tf\n50 750 Td\n20 TL\n"
-    for line in text_lines:
-        safe_line = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-        stream_content += f"({safe_line}) '\n"
-    stream_content += "ET\n"
-    
-    stream_bytes = stream_content.encode("latin-1")
-    stream_len = len(stream_bytes)
-    
-    pdf_template = (
-        b"%PDF-1.4\n"
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
-        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
-        b"5 0 obj\n<< /Length " + str(stream_len).encode("ascii") + b" >>\nstream\n" +
-        stream_bytes +
-        b"\nendstream\nendobj\n"
-        b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000234 00000 n \n0000000307 00000 n \n"
-        b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" +
-        str(350 + stream_len).encode("ascii") +
-        b"\n%%EOF\n"
-    )
-    return pdf_template
-
-
-@app.get("/api/invoices/{invoice_id}/document")
-async def get_invoice_document_stream(
-    invoice_id: str,
-    customer_phone: str = Query(...)
-):
-    """
-    Streams invoice PDF document with Content-Disposition inline for browser viewing.
-    Verifies phone authentication match and proxies Supabase CDN or generates dynamic official PDF.
-    """
-    from psycopg2.extras import DictCursor
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=DictCursor)
-    cursor.execute("SELECT customer_phone, file_url, customer_name, remaining_amount_paise, due_date FROM master_invoices WHERE invoice_id = %s;", (invoice_id,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    clean_db = row["customer_phone"].replace(" ", "").replace("-", "")
-    clean_req = customer_phone.replace(" ", "").replace("-", "")
-    if clean_db != clean_req:
-        raise HTTPException(status_code=403, detail="Forbidden: Phone mismatch")
-
-    file_url = row.get("file_url")
-    customer_name = row.get("customer_name", "Valued Customer")
-    remaining_inr = paise_to_inr(row.get("remaining_amount_paise", 0))
-    due_date = row.get("due_date", "")
-
-    # 1. If real Supabase CDN link exists and is reachable, stream bytes
-    if file_url and (file_url.startswith("http://") or file_url.startswith("https://")):
-        try:
-            resp = requests.get(file_url, timeout=3.0)
-            if resp.status_code == 200:
-                return Response(
-                    content=resp.content,
-                    media_type="application/pdf",
-                    headers={"Content-Disposition": f"inline; filename={invoice_id}_bill.pdf"}
-                )
-        except Exception:
-            pass
-
-    # 2. Dynamic high-fidelity PDF Stream fallback
-    pdf_bytes = generate_simple_invoice_pdf(
-        invoice_id=invoice_id,
-        customer_name=customer_name,
-        amount_inr=remaining_inr,
-        due_date=due_date
-    )
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename={invoice_id}_bill.pdf"}
-    )
+@app.post("/api/invoices/trigger-due-reminders")
+async def trigger_due_reminders():
+    """Manually triggers the due date automated WhatsApp reminder background job."""
+    res = await check_due_date_reminders_job()
+    return res
 
 
 # --- 3. Merchant Guardrail Control Endpoints ---

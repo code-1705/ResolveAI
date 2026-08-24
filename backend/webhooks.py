@@ -338,7 +338,7 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
         invoice.status = target_status
         upsert_invoice(invoice)
 
-        # 3. Retrieve Merchant Profile & Financial Split (99% Merchant, 1% Platform Take-Rate)
+        # 3. Retrieve Merchant Profile & Financial Split (97% Merchant, 3% Platform Take-Rate)
         conn_m = get_connection()
         cur_m = conn_m.cursor()
         cur_m.execute("SELECT merchant_id FROM master_invoices WHERE invoice_id = %s;", (invoice_id,))
@@ -347,7 +347,7 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
         m_id = m_row[0] if (m_row and m_row[0]) else "default_merchant"
         merchant = get_merchant_by_id(m_id)
 
-        comm_pct = getattr(merchant, 'commission_pct', 1.0) or 1.0
+        comm_pct = getattr(merchant, 'commission_pct', 3.0) or 3.0
         m_payout_pct = 100.0 - comm_pct
         merchant_share_paise = int(amount_paise * (m_payout_pct / 100.0))
         platform_fee_paise = amount_paise - merchant_share_paise
@@ -364,7 +364,7 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
         is_transfer_successful = trf_res.get("success", True) if not razorpay_client.is_mock else True
         outflow_status = "TRANSFERRED" if is_transfer_successful and transfer_id else "FAILED"
 
-        # 5. Record Double-Entry Ledger (Inflow Customer Payment & Outflow 99% Merchant Wire)
+        # 5. Record Double-Entry Ledger (Inflow Customer Payment & Outflow 97% Merchant Wire)
         log_financial_transaction(
             merchant_id=m_id,
             invoice_id=invoice_id,
@@ -427,6 +427,12 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
             
             session_manager.add_message(invoice.customer_phone, "agent", receipt_msg)
             
+            # Send automated WhatsApp receipt confirmation directly to buyer
+            try:
+                whatsapp_client.send_text_message(invoice.customer_phone, receipt_msg)
+            except Exception as wa_err:
+                print(f"[WhatsApp Confirmation Notice]: {wa_err}")
+
             # Broadcast real-time SSE event with chat update
             try:
                 from backend.main import broadcast_sse_event

@@ -94,7 +94,7 @@ export default function App() {
     pan_number: '',
     commission_pct: 1.0,
     settlement_payout_pct: 99.0,
-    settlement_cycle: 'Direct Bank Settlement (T+1 Days)',
+    settlement_cycle: 'Instant Direct Settlement (Real-Time)',
     settlement_status: 'ACTIVE',
     bank_account_masked: 'Not Configured'
   });
@@ -797,7 +797,7 @@ export default function App() {
           <button
             onClick={() => {
               if (!isBankSetupComplete) {
-                showToast('⚠️ Setup Required: Please configure your bank account for 99% direct settlements first!', 'error');
+                showToast('⚠️ Setup Required: Please configure your bank account for 97% direct settlements first!', 'error');
                 setActiveTab('settlement');
               } else {
                 setActiveTab('dashboard');
@@ -822,7 +822,7 @@ export default function App() {
           <button
             onClick={() => {
               if (!isBankSetupComplete) {
-                showToast('⚠️ Setup Required: Please configure your bank account for 99% direct settlements first!', 'error');
+                showToast('⚠️ Setup Required: Please configure your bank account for 97% direct settlements first!', 'error');
                 setActiveTab('settlement');
               } else {
                 setActiveTab('guardrails');
@@ -849,7 +849,7 @@ export default function App() {
             <button
               onClick={() => {
                 if (!isBankSetupComplete) {
-                  showToast('⚠️ Setup Required: Please configure your bank account for 99% direct settlements first!', 'error');
+                  showToast('⚠️ Setup Required: Please configure your bank account for 97% direct settlements first!', 'error');
                   setActiveTab('settlement');
                 } else {
                   setActiveTab('simulator');
@@ -1202,7 +1202,7 @@ export default function App() {
                 <div>
                   <strong style={{ fontSize: '0.95rem' }}>Mandatory Bank Account Setup:</strong>
                   <div style={{ fontSize: '0.82rem', marginTop: '2px' }}>
-                    You must link your official bank account to enable invoice recovery, customer payment links, and 99% automated direct payouts.
+                    You must link your official bank account to enable invoice recovery, customer payment links, and 97% automated direct payouts.
                   </div>
                 </div>
               </div>
@@ -1214,7 +1214,7 @@ export default function App() {
                 Bank & Direct Settlement Settings
               </h2>
               <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                Configure your verified bank account to receive 99% automated payouts when customers pay invoices via WhatsApp.
+                Configure your verified bank account to receive 97% automated payouts when customers pay invoices via WhatsApp.
               </p>
             </div>
 
@@ -1234,7 +1234,7 @@ export default function App() {
 
               <div className="glass-panel" style={{ padding: '20px' }}>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Settlement Cycle</p>
-                <h3 style={{ fontSize: '1.4rem', fontWeight: '700', color: 'var(--text-main)' }}>T+1 Days</h3>
+                <h3 style={{ fontSize: '1.4rem', fontWeight: '700', color: 'var(--text-main)' }}>Instant (Real-Time)</h3>
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>Next Business Day NEFT/IMPS</p>
               </div>
 
@@ -1270,7 +1270,7 @@ export default function App() {
                         )}
                       </div>
                       <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                        Recovered customer funds (99% net payout) will be deposited directly to this account.
+                        Recovered customer funds (97% net payout) will be deposited directly to this account.
                       </p>
                     </div>
                   </div>
@@ -1636,7 +1636,7 @@ export default function App() {
                     </div>
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <span style={{ fontWeight: '700', color: 'var(--primary)' }}>3.</span>
-                      <span>The remaining <strong>99.0%</strong> is auto-deposited directly to your verified bank account via T+1 settlement.</span>
+                      <span>The remaining <strong>97.0%</strong> is auto-deposited directly to your verified bank account via instant settlement.</span>
                     </div>
                   </div>
                 </div>
@@ -1677,7 +1677,7 @@ export default function App() {
                     </span>
                   </div>
                   <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    Immutable real-time audit record of customer payment inflows and 99% automated merchant direct bank wire payouts.
+                    Immutable real-time audit record of customer payment inflows and 97% automated merchant direct bank wire payouts.
                   </p>
                 </div>
                 <button
@@ -1717,8 +1717,8 @@ export default function App() {
                         <th style={{ padding: '12px 14px', fontWeight: '600' }}>Transaction Type</th>
                         <th style={{ padding: '12px 14px', fontWeight: '600' }}>Invoice & Customer</th>
                         <th style={{ padding: '12px 14px', fontWeight: '600' }}>Gross Amount</th>
-                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Platform Cut (1%)</th>
-                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Net Payout (99%)</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Platform Cut (3%)</th>
+                        <th style={{ padding: '12px 14px', fontWeight: '600' }}>Net Payout (97%)</th>
                         <th style={{ padding: '12px 14px', fontWeight: '600' }}>Transfer / Ref ID</th>
                         <th style={{ padding: '12px 14px', fontWeight: '600' }}>Status</th>
                       </tr>
@@ -1736,7 +1736,7 @@ export default function App() {
                               </span>
                             ) : (
                               <span style={{ padding: '3px 8px', borderRadius: '6px', background: 'rgba(55, 139, 89, 0.1)', color: 'var(--success)', fontSize: '0.75rem', fontWeight: '600' }}>
-                                ⬆ Direct Bank Wire (99%)
+                                ⬆ Direct Bank Wire (97%)
                               </span>
                             )}
                           </td>
@@ -1766,7 +1766,7 @@ export default function App() {
                               color: tx.status === 'TRANSFERRED' ? 'var(--success)' : '#0066FF',
                               border: `1px solid ${tx.status === 'TRANSFERRED' ? 'var(--success)' : 'rgba(0, 102, 255, 0.3)'}`
                             }}>
-                              {tx.status === 'TRANSFERRED' ? '🟢 SETTLED (T+1)' : '🟢 CAPTURED'}
+                              {tx.status === 'TRANSFERRED' ? '🟢 SETTLED (INSTANT)' : '🟢 CAPTURED'}
                             </span>
                           </td>
                         </tr>
@@ -1851,16 +1851,28 @@ export default function App() {
                     >
                       {(() => {
                         // Extract any Supabase or PDF URL from message text to display clean PDF Document Card
-                        const urlMatch = msg.text ? msg.text.match(/(https?:\/\/[^\s]+)/i) : null;
+                        const urlMatch = msg.text ? msg.text.match(/(https?:\/\/[^\s]+|\/api\/invoices\/[^\s]+)/i) : null;
                         let cleanText = msg.text || '';
                         let attachedUrl = null;
 
                         if (urlMatch && !urlMatch[0].includes('rzp.io')) {
-                          attachedUrl = urlMatch[0];
-                          cleanText = msg.text.replace(attachedUrl, '').trim();
+                          attachedUrl = urlMatch[0].startsWith('http') ? urlMatch[0] : `${API_BASE}${urlMatch[0]}`;
+                          cleanText = msg.text.replace(urlMatch[0], '').replace(/📄\s*You can view your invoice statement here:?\s*/i, '').trim();
                         }
 
-                        const mediaDocs = msg.metadata?.media_documents || [];
+                        let mediaDocs = msg.metadata?.media_documents || [];
+                        if (mediaDocs.length === 0 && msg.sender === 'agent' && index === 0) {
+                          const bills = (activeCustomer?.invoices && activeCustomer.invoices.length > 0)
+                            ? activeCustomer.invoices.filter(i => i.status !== 'PAID')
+                            : (selectedInvoice ? [selectedInvoice] : []);
+                          if (bills.length > 0) {
+                            mediaDocs = bills.map(b => ({
+                              invoice_id: b.invoice_id,
+                              filename: `${b.invoice_id}_bill.pdf`,
+                              url: `/api/invoices/${b.invoice_id}/document?customer_phone=${encodeURIComponent(activeCustomer?.customer_phone || selectedPhone || '')}`
+                            }));
+                          }
+                        }
 
                         return (
                           <>
@@ -1934,32 +1946,6 @@ export default function App() {
                           </>
                         );
                       })()}
-
-                      {/* Interactive Invoice Document Attachment Link */}
-                      {selectedInvoice && (selectedInvoice.has_document || selectedInvoice.document_url) && index === 0 && (
-                        <div style={{ marginTop: '8px', paddingTop: '6px', borderTop: '1px solid var(--border-color)' }}>
-                          <a
-                            href={selectedInvoice.document_url || `${API_BASE}/api/invoices/${selectedInvoice.invoice_id}/document?customer_phone=${encodeURIComponent(selectedInvoice.customer_phone)}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '6px',
-                              padding: '6px 12px',
-                              borderRadius: '6px',
-                              background: 'var(--bg-dark)',
-                              border: '1px solid var(--border-color)',
-                              color: 'var(--text-main)',
-                              fontSize: '0.78rem',
-                              fontWeight: '600',
-                              textDecoration: 'none'
-                            }}
-                          >
-                            📄 View Original Invoice Bill (PDF/Image)
-                          </a>
-                        </div>
-                      )}
 
                       {/* Interactive Payment Button inside Chat Bubble when payment link is generated */}
                       {msg.sender === 'agent' && (msg.metadata?.payment_link_url || msg.text.includes('https://rzp.io/')) && selectedInvoice && selectedInvoice.remaining_amount_inr > 0 && (

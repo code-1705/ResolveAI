@@ -95,14 +95,31 @@ class SessionManager:
 
         if row:
             raw_messages = json.loads(row["messages_json"])
-            messages = [
-                ChatMessage(
-                    sender=m["sender"],
-                    text=m["text"],
-                    timestamp=m["timestamp"],
-                    metadata=m.get("metadata", {})
-                ) for m in raw_messages
+            messages = []
+            profile = get_customer_financial_profile(phone)
+            pending_bills = [item for item in profile.get("invoices", []) if item.get("status") != "PAID"]
+            import urllib.parse
+            media_docs = [
+                {
+                    "invoice_id": b["invoice_id"],
+                    "filename": f"{b['invoice_id']}_bill.pdf",
+                    "url": f"/api/invoices/{b['invoice_id']}/document?customer_phone={urllib.parse.quote_plus(phone)}"
+                } for b in pending_bills
             ]
+
+            for i, m in enumerate(raw_messages):
+                meta = m.get("metadata") or {}
+                if i == 0 and m.get("sender") == "agent":
+                    if not meta.get("media_documents") and media_docs:
+                        meta["media_documents"] = media_docs
+                messages.append(
+                    ChatMessage(
+                        sender=m["sender"],
+                        text=m["text"],
+                        timestamp=m["timestamp"],
+                        metadata=meta
+                    )
+                )
             conn.close()
             return ChatSession(
                 customer_phone=phone,
@@ -175,7 +192,10 @@ class SessionManager:
                     sender="agent",
                     text=greeting_text,
                     timestamp=timestamp,
-                    metadata={"outbound_initial_reminder": True}
+                    metadata={
+                        "outbound_initial_reminder": True,
+                        "media_documents": media_docs
+                    }
                 )
             ]
         )

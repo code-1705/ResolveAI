@@ -61,6 +61,6 @@ class Settings(BaseModel):
     SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 settings = Settings()
-if settings.is_test_env:
+if settings.is_test_env and not os.getenv("DATABASE_URL"):
     settings.DATABASE_URL = None
     settings.REDIS_URL = None

@@ -224,9 +224,10 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
     m_id = merchant_id or getattr(invoice, 'merchant_id', 'default_merchant') or 'default_merchant'
+    f_url = getattr(invoice, 'file_url', None)
     cursor.execute("""
-    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention, merchant_id)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    INSERT INTO master_invoices (invoice_id, customer_name, customer_phone, original_amount_paise, paid_amount_paise, remaining_amount_paise, due_date, status, requires_human_attention, merchant_id, file_url)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT(invoice_id) DO UPDATE SET
         customer_name=excluded.customer_name,
         customer_phone=excluded.customer_phone,
@@ -236,7 +237,8 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
         due_date=excluded.due_date,
         status=excluded.status,
         requires_human_attention=excluded.requires_human_attention,
-        merchant_id=COALESCE(excluded.merchant_id, master_invoices.merchant_id);
+        merchant_id=COALESCE(excluded.merchant_id, master_invoices.merchant_id),
+        file_url=COALESCE(excluded.file_url, master_invoices.file_url);
     """, (
         invoice.invoice_id,
         invoice.customer_name,
@@ -247,7 +249,8 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
         invoice.due_date,
         invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status,
         invoice.requires_human_attention,
-        m_id
+        m_id,
+        f_url
     ))
     conn.commit()
     conn.close()
@@ -269,7 +272,8 @@ def get_invoice(invoice_id: str, ) -> Optional[MasterInvoice]:
             remaining_amount_paise=row["remaining_amount_paise"],
             due_date=row["due_date"],
             status=InvoiceStatus(row["status"]),
-            requires_human_attention=bool(dict(row).get("requires_human_attention", False))
+            requires_human_attention=bool(dict(row).get("requires_human_attention", False)),
+            file_url=dict(row).get("file_url")
         )
     return None
 
@@ -289,7 +293,8 @@ def get_invoices_by_phone(phone: str, ) -> List[MasterInvoice]:
             remaining_amount_paise=r["remaining_amount_paise"],
             due_date=r["due_date"],
             status=InvoiceStatus(r["status"]),
-            requires_human_attention=bool(dict(r).get("requires_human_attention", False))
+            requires_human_attention=bool(dict(r).get("requires_human_attention", False)),
+            file_url=dict(r).get("file_url")
         ) for r in rows
     ]
 
@@ -546,7 +551,7 @@ def get_merchant_by_id(merchant_id: str) -> Optional[Merchant]:
             bank_name=row.get("bank_name"),
             upi_id=row.get("upi_id"),
             pan_number=row.get("pan_number"),
-            commission_pct=float(row.get("commission_pct") or 1.0),
+            commission_pct=float(row.get("commission_pct") or 3.0),
             settlement_status=row.get("settlement_status") or "ACTIVE"
         )
     return None
@@ -598,7 +603,7 @@ def update_merchant_bank_settlement(
             bank_name=row.get("bank_name"),
             upi_id=row.get("upi_id"),
             pan_number=row.get("pan_number"),
-            commission_pct=float(row.get("commission_pct") or 1.0),
+            commission_pct=float(row.get("commission_pct") or 3.0),
             settlement_status=row.get("settlement_status") or "ACTIVE"
         )
     return None
@@ -622,7 +627,7 @@ def get_or_create_merchant(merchant_id: str, email: str, business_name: str, pho
             bank_name=row.get("bank_name"),
             upi_id=row.get("upi_id"),
             pan_number=row.get("pan_number"),
-            commission_pct=float(row.get("commission_pct") or 1.0),
+            commission_pct=float(row.get("commission_pct") or 3.0),
             settlement_status=row.get("settlement_status") or "ACTIVE",
             password_hash=row.get("password_hash"),
             razorpay_account_id=row.get("razorpay_account_id")
@@ -649,7 +654,7 @@ def get_or_create_merchant(merchant_id: str, email: str, business_name: str, pho
         bank_name=new_row.get("bank_name"),
         upi_id=new_row.get("upi_id"),
         pan_number=new_row.get("pan_number"),
-        commission_pct=float(new_row.get("commission_pct") or 1.0),
+        commission_pct=float(new_row.get("commission_pct") or 3.0),
         settlement_status=new_row.get("settlement_status") or "ACTIVE",
         password_hash=new_row.get("password_hash")
     )
@@ -674,7 +679,7 @@ def get_merchant_by_email(email: str) -> Optional[Merchant]:
             bank_name=row.get("bank_name"),
             upi_id=row.get("upi_id"),
             pan_number=row.get("pan_number"),
-            commission_pct=float(row.get("commission_pct") or 1.0),
+            commission_pct=float(row.get("commission_pct") or 3.0),
             settlement_status=row.get("settlement_status") or "ACTIVE",
             password_hash=row.get("password_hash"),
             razorpay_account_id=row.get("razorpay_account_id")
@@ -713,7 +718,7 @@ def create_merchant_with_password(
         bank_name=row.get("bank_name"),
         upi_id=row.get("upi_id"),
         pan_number=row.get("pan_number"),
-        commission_pct=float(row.get("commission_pct") or 1.0),
+        commission_pct=float(row.get("commission_pct") or 3.0),
         settlement_status=row.get("settlement_status") or "ACTIVE",
         password_hash=row.get("password_hash")
     )
@@ -734,7 +739,7 @@ def log_financial_transaction(
     bank_ifsc: Optional[str] = None,
     status: str = 'CAPTURED'
 ) -> int:
-    """Records an immutable financial event (Customer Payment Inflow or 99% Merchant Transfer Outflow) in the Double-Entry Ledger."""
+    """Records an immutable financial event (Customer Payment Inflow or 97% Merchant Transfer Outflow) in the Double-Entry Ledger."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
