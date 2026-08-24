@@ -4,7 +4,7 @@ import AuthView from './AuthView';
 import LandingPage from './LandingPage';
 import './index.css';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (window.location.port === '5173' ? 'http://localhost:8000' : window.location.origin);
 
 // Toast Container Component
 function ToastContainer({ toasts, removeToast }) {

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (window.location.port === '5173' ? 'http://localhost:8000' : window.location.origin);
+
 export default function AuthView({ onAuthSuccess, showToast, onBackToLanding }) {
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
   const [email, setEmail] = useState('');
@@ -22,7 +24,7 @@ export default function AuthView({ onAuthSuccess, showToast, onBackToLanding }) 
         }
 
         // 1. Direct Backend Registration (Immediately writes to PostgreSQL merchants table)
-        const res = await fetch('http://localhost:8000/api/auth/register', {
+        const res = await fetch(`${API_BASE}/api/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -45,7 +47,7 @@ export default function AuthView({ onAuthSuccess, showToast, onBackToLanding }) 
         }
       } else {
         // 1. Direct Backend Login (Ensures merchant in PostgreSQL)
-        const res = await fetch('http://localhost:8000/api/auth/login', {
+        const res = await fetch(`${API_BASE}/api/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

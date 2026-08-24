@@ -2,6 +2,7 @@ from backend.storage import upload_to_supabase_storage
 import jwt
 from backend.auth import get_current_merchant, require_verified_merchant_bank
 from backend.models import Merchant
+import os
 import time
 import base64
 import requests
@@ -185,13 +186,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- Explicit CORS Security Configuration ---
+# --- Production-Ready CORS Security Configuration ---
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+allowed_origins = [orig.strip() for orig in cors_origins_env.split(",") if orig.strip()] if cors_origins_env else [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=allowed_origins if cors_origins_env else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

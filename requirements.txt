@@ -1,0 +1,12 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+psycopg2-binary>=2.9.9
+redis>=5.0.1
+requests>=2.31.0
+google-genai>=0.1.1
+APScheduler>=3.10.4
+tenacity>=8.2.3
+reportlab>=4.1.0
+python-dotenv>=1.0.1
+sse-starlette>=2.0.0
