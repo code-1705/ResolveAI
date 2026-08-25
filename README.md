@@ -1,144 +1,373 @@
-# Resolve.ai - Autonomous Collections Agent for Razorpay
+# ⚡ Resolve.ai — Autonomous AI Accounts Receivable & Collections Platform for Razorpay
 
-**Resolve.ai** is a production-grade, guardrail-constrained autonomous collections agent designed for Indian SMEs and freelancers using Razorpay. It bridges unstructured human negotiation over WhatsApp/Email with deterministic financial transactions via the Razorpay API, transforming overdue invoices into recovered Total Payment Volume (TPV).
-
----
-
-## 🏆 Completed 5-Submodule End-to-End Implementation
-
-### Submodule 1: Core Database, Models & Guardrail Engine (`backend/`)
-1. **Configuration & Secrets (`backend/config.py`)**: Centralized Pydantic settings loading environment variables, merchant defaults, and DB paths.
-2. **Data Schemas & Models (`backend/models.py`)**:
-   - Integer paise currency storage (`original_amount_paise`, `paid_amount_paise`, `remaining_amount_paise`).
-   - `MerchantGuardrails`, `MasterInvoice`, `TransactionLedger` (`UNIQUE(razorpay_payment_id)`), `PaymentLinkRecord`, `ChatSession` (`f"{phone}_{invoice_id}"`), `ChatMessage`.
-3. **Database Engine & FSM Validation (`backend/database.py`)**:
-   - SQLite WAL mode (`PRAGMA journal_mode=WAL;`) with 5000ms busy timeout.
-   - Non-reversible FSM state machine ($\text{UNPAID} \rightarrow \text{NEGOTIATING} \rightarrow \text{PARTIALLY\_PAID} \rightarrow \text{PAID}$).
-4. **Deterministic Guardrail Engine (`backend/guardrails.py`)**:
-   - Floor check (`proposed >= min_required`), Ceiling check (`proposed <= remaining`), and Razorpay 180-day cap check.
-
-### Submodule 2: Razorpay API Client & Meta Webhook Engines (`backend/`)
-1. **Razorpay Client & Payload Idempotency (`backend/razorpay_client.py`)**:
-   - `create_payment_link()` with `"reference_id": f"ref_{session_id[:20]}_t{turn}"` (max 40 chars) payload idempotency & `"notes": {"invoice_id": invoice_id}`.
-   - `cancel_payment_link()` deactivating superseded active links.
-   - `verify_webhook_signature()` validating HMAC-SHA256 directly over raw request bytes.
-2. **Meta WhatsApp Cloud API Client (`backend/whatsapp_client.py`)**:
-   - `send_text_message()` and `send_interactive_buttons()` (multi-invoice button prompt).
-3. **Meta & Razorpay Webhook Engine (`backend/webhooks.py`)**:
-   - `verify_meta_webhook()` GET challenge handshake (`hub.challenge`).
-   - `process_whatsapp_webhook()` parsing both `type == "text"` and `type == "interactive"` button replies for composite session key binding (`f"{customer_phone}_{invoice_id}"`).
-   - `reconcile_payment_event()` async reconciler executing integer paise math, FSM updates, and link deactivation strictly inside invoice row locks (`async with invoice_locks[invoice_id]:`).
-
-### Submodule 3: LLM Negotiation Agent & Session Manager (`backend/`)
-1. **Session Context Manager (`backend/session_manager.py`)**:
-   - `SessionManager`: Manages multi-turn conversation state mapped to composite session keys `f"{customer_phone}_{invoice_id}"`.
-   - `get_session_lock()`: Multi-loop thread-safe per-session async locks preventing double-texting race conditions.
-2. **Agentic Negotiation Engine (`backend/agent.py`)**:
-   - **Anti-Hallucination Directives**: Forbids confirming receipt of funds based on customer text claims alone without verified DB status (`PARTIALLY_PAID` or `PAID`).
-   - **Untrusted LLM Safety Gateway**: Filters tool proposals through `GuardrailEngine`. If `PASS`, converts INR to integer paise, calculates 180-day capped UTC expiry timestamp, generates `reference_id`, and executes Razorpay API call. If `REJECT`, hard blocks API call and issues polite counter-offer.
-   - **Inspectable Agent Trace**: Constructs visual audit payload (`thought`, `guardrail_check`, `currency_conversion`, `tool_executed`, `payment_link_url`).
-
-### Submodule 4: FastAPI Server Core & REST Endpoints (`backend/`)
-1. **Demo Seed Data (`backend/seed_data.py`)**:
-   - Seeds realistic Indian SME overdue invoices: Apex Logistics (₹50,000), Vanguard Web Studios (₹1,20,000), GreenLeaf Organics (₹35,000).
-2. **FastAPI Application Server (`backend/main.py`)**:
-   - **Explicit CORS Security**: `allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"]`.
-   - **Real-Time Server-Sent Events (SSE)** (`GET /api/events`): Broadcasts live updates (`payment_reconciled`, `guardrails_updated`, `chat_message_processed`) with non-blocking timeout polling.
-   - **REST & Webhook Endpoints**:
-     - `GET /api/invoices`, `GET /api/invoices/{id}`
-     - `GET /api/guardrails`, `POST /api/guardrails`
-     - `POST /api/chat/message`, `POST /api/chat/reset`
-     - `POST /api/webhooks/razorpay` (HMAC verified, enqueued as `BackgroundTasks`)
-     - `GET /api/webhooks/whatsapp`, `POST /api/webhooks/whatsapp` (enqueued as `BackgroundTasks`)
-     - `GET /api/analytics` (Total Overdue TPV, Recovered TPV, Recovery Rate %)
-
-### Submodule 5: Frontend Dashboard & WhatsApp Simulator (`frontend/`)
-1. **Glassmorphism Dark-Mode Web Application (`frontend/src/`)**:
-   - **Real-Time SSE Syncing (`EventSource`)**: Live updates without page refreshes.
-   - **📊 Invoices & Analytics Dashboard**: TPV metric cards, recovery progress bar, master invoice table with status badges (`UNPAID`, `NEGOTIATING`, `PARTIALLY_PAID`, `PAID`).
-   - **🛡️ Merchant Guardrails Control**: Interactive policy sliders for minimum partial payment % (10-100%), maximum extension days (1-180), and negotiation persona/tone.
-   - **💬 WhatsApp Customer Simulator**: Dual-pane layout featuring WhatsApp chat bubbles with proposal presets (*Propose 40% Today*, *14-Day Extension*, *Lowball 10%*, *Claim Paid via UPI*).
-   - **🔍 Inspectable Real-Time Agent Trace Panel**: Step-by-step audit visualization showing strategy reasoning, guardrail pass/reject status, zero-float-drift integer paise conversion, payload idempotency keys, and generated Razorpay payment link URLs.
+<p align="center">
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" alt="React" />
+  <img src="https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Razorpay-02042B?style=for-the-badge&logo=razorpay&logoColor=3395FF" alt="Razorpay" />
+  <img src="https://img.shields.io/badge/Google_Gemini-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Google Gemini" />
+  <img src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white" alt="Supabase" />
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License" />
+</p>
 
 ---
 
-## 🧪 Verification Results
+## 📌 Executive Summary
 
-### 1. Complete Backend Unit Test Suite (`backend/test_submodule*.py`)
-```bash
-python -m unittest backend/test_submodule1.py backend/test_submodule2.py backend/test_submodule3.py backend/test_submodule4.py
+**Resolve.ai** is an enterprise-grade, guardrail-constrained autonomous accounts receivable (AR) and debt collection engine built for Indian SMEs, enterprises, and freelancers using **Razorpay**. 
+
+Resolve.ai bridges unstructured, human negotiation over **WhatsApp Cloud API / Email** with deterministic, verifiable financial transactions via the **Razorpay API**. It transforms delinquent accounts into recovered **Total Payment Volume (TPV)** without alienating clients or risking financial hallucination.
+
 ```
-Output:
-```text
-...................
-----------------------------------------------------------------------
-Ran 19 tests in 2.050s
-
-OK
-```
-
-### 2. Frontend Production Bundle Build (`frontend/`)
-```bash
-cd frontend
-npm run build
-```
-Output:
-```text
-vite v8.2.2 building client environment for production...
-✓ 16 modules transformed.
-dist/index.html                   0.45 kB │ gzip:  0.29 kB
-dist/assets/index-4Ppi2ilN.css    1.67 kB │ gzip:  0.84 kB
-dist/assets/index-DpfKmeO8.js   213.65 kB │ gzip: 65.43 kB
-
-✓ built in 2.80s
+                  ┌────────────────────────────────────────────────────────┐
+                  │                 RESOLVE.AI ECOSYSTEM                   │
+                  └──────────────────────────┬─────────────────────────────┘
+                                             │
+      ┌──────────────────────────────────────┼──────────────────────────────────────┐
+      ▼                                      ▼                                      ▼
+💬 WhatsApp / Meta API             🧠 Agent & Guardrails Engine             💳 Razorpay API & Webhooks
+• Unified phone-centric threads    • Google Gemini AI Negotiation          • Dynamic payment link generation
+• Native PDF invoice delivery      • Integer paise math (zero float)       • HMAC-SHA256 signature verification
+• Interactive payment buttons      • Multi-Bill FIFO auto-distribution     • Automated stale link invalidation
 ```
 
 ---
 
-## 🚀 Running the Project Locally
+## 📑 Table of Contents
 
-### 1. Start the FastAPI Backend Server
-```bash
-python -m uvicorn backend.main:app --reload --port 8000
-```
-
-### 2. Start the React Frontend UI
-```bash
-cd frontend
-npm run dev
-```
-
-Open `http://localhost:5173` in your browser to interact with the Resolve.ai Merchant Dashboard and WhatsApp Simulator!
+- [Key Value Propositions](#-key-value-propositions)
+- [System Architecture](#-system-architecture)
+- [Core Engineering Pillars](#-core-engineering-pillars)
+  - [1. Deterministic Guardrail Firewall](#1-deterministic-guardrail-firewall)
+  - [2. Multi-Bill FIFO Settlement Engine](#2-multi-bill-fifo-settlement-engine)
+  - [3. Non-Reversible Financial FSM & Mutex Locking](#3-non-reversible-financial-fsm--mutex-locking)
+  - [4. Anti-Hallucination Claim Verification](#4-anti-hallucination-claim-verification)
+  - [5. Invoice Document CDN & PDF Generation](#5-invoice-document-cdn--pdf-generation)
+- [Tech Stack](#-tech-stack)
+- [Directory Structure](#-directory-structure)
+- [Getting Started](#-getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Environment Configuration](#environment-configuration)
+  - [Backend Setup](#backend-setup)
+  - [Frontend Setup](#frontend-setup)
+- [API Reference](#-api-reference)
+- [Verification & Automated Test Suite](#-verification--automated-test-suite)
+- [Multi-Tenant SaaS Architecture](#-multi-tenant-saas-architecture)
+- [License](#-license)
 
 ---
 
-## 📁 Complete Project Architecture
+## 🌟 Key Value Propositions
+
+| Feature | Problem It Solves | Resolve.ai Solution |
+| :--- | :--- | :--- |
+| **Autonomous Negotiation** | Manual AR follow-ups are labor-intensive, uncomfortable, and slow. | Empathetic AI acting as the merchant's Finance Relationship Team negotiates custom settlements 24/7. |
+| **Strict Guardrail Firewall** | LLMs hallucinate unauthorized discounts, invalid due dates, or floating-point errors. | 100% deterministic Python rule gateway enforcing policy floors, ceilings, and 180-day caps before API execution. |
+| **Multi-Bill FIFO Allocation** | Customers with multiple invoices get confused or make lump-sum payments that break single-invoice tracking. | Account-level ledger with automatic FIFO (First-In, First-Out) balance distribution across all outstanding bills. |
+| **Cryptographic Webhooks** | Duplicate webhook processing leads to double-crediting or ledger corruption. | Timing-safe HMAC-SHA256 verification, `UNIQUE(razorpay_payment_id)` ledger idempotency, and row mutex locks. |
+| **Live Multi-Tenant SaaS** | Single-tenant systems cannot isolate merchant data or handle organizational scaling. | Supabase Auth with JWT gatekeeper, tenant-isolated tables (`merchant_id`), and live Server-Sent Events (SSE). |
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Customer["Customer Channels"]
+        WA["WhatsApp Cloud API"]
+        SIM["Merchant WhatsApp Simulator (UI)"]
+    end
+
+    subgraph Gateway["FastAPI Server & Security Layer"]
+        AUTH["Supabase JWT Auth Gatekeeper"]
+        WH_ROUTER["Webhook Router\n(HMAC-SHA256 Verified)"]
+        SSE["Server-Sent Events (SSE) Stream\n(/api/events)"]
+        DOC_PROXY["Invoice PDF Streaming Proxy\n(/api/invoices/{id}/document)"]
+    end
+
+    subgraph AgenticCore["Agentic Reasoning & Guardrails"]
+        SM["Session Context Manager\n(Phone-Centric Locks)"]
+        GEMINI["Google Gemini AI\n(Negotiation Strategy)"]
+        GUARD["Deterministic Guardrail Firewall\n(Paise Math, Bounds, Expiry)"]
+    end
+
+    subgraph FinancialCore["Financial Transaction Ledger"]
+        FIFO["Multi-Bill FIFO Allocation Engine"]
+        FSM["Invoice State Machine\n(UNPAID ➔ NEGOTIATING ➔ PARTIALLY_PAID ➔ PAID)"]
+        RZP_CLIENT["Razorpay API Client\n(Idempotent Links & Link Cancellation)"]
+    end
+
+    subgraph Storage["Data & Storage Infrastructure"]
+        PG[("PostgreSQL Database\n(Merchants, Invoices, Ledger)")]
+        SUPA_STORAGE[("Supabase Storage CDN\n(Private Invoice PDF Buckets)")]
+        SCHEDULER["APScheduler Cron\n(Missed Webhook & Link Expiry Reconciliation)"]
+    end
+
+    WA -->|Inbound Message| WH_ROUTER
+    SIM -->|Simulated Chat| SM
+    WH_ROUTER -->|Async Task| SM
+    SM --> GEMINI
+    GEMINI -->|Proposed Action| GUARD
+    GUARD -->|Pass / Tool Execution| RZP_CLIENT
+    RZP_CLIENT -->|Generated Payment Link| WA
+    RZP_CLIENT -->|Generated Payment Link| SIM
+
+    RZP_CLIENT -.->|Customer Pays| WH_ROUTER
+    WH_ROUTER -->|payment.captured| FIFO
+    FIFO --> FSM
+    FSM --> PG
+    FSM --> SSE
+    SSE --> SIM
+
+    DOC_PROXY --> SUPA_STORAGE
+    SCHEDULER -->|Poll Active Links| RZP_CLIENT
+    AUTH --> PG
+```
+
+---
+
+## 🛡️ Core Engineering Pillars
+
+### 1. Deterministic Guardrail Firewall
+AI agents should **never** have direct, uncontrolled access to banking or payment APIs. In Resolve.ai:
+- **Zero-Float Integer Paise Standard**: All monetary values are strictly converted to and computed as integer paise (`₹1 = 100 paise`), eliminating IEEE 754 floating-point drift.
+- **Merchant Bounds Enforcement**: Every AI tool call is intercepted by `backend/guardrails.py`. Proposals are validated against merchant-configured policies:
+  - Minimum down payment floor (`min_partial_payment_pct`).
+  - Maximum due date extension (`max_extension_days`).
+  - Maximum installment count (`max_split_installments`).
+  - Maximum allowable waiver/discount (`max_discount_pct`).
+- **Platform Cap Enforcement**: Payment link validity timestamps are strictly clamped to Razorpay's 180-day maximum limit.
+
+### 2. Multi-Bill FIFO Settlement Engine
+When an account has multiple overdue invoices (e.g., Bill A for ₹8,000 and Bill B for ₹9,000):
+- If the customer offers a lump-sum payment (e.g., ₹12,000 towards their balance), the agent identifies an `account_settlement` scope.
+- Upon payment capture, the **FIFO Webhook Reconciler** acquires an account-level mutex lock, queries all unpaid invoices ordered by `due_date ASC`, and cascades the payment:
+  1. Fully satisfies Bill A (₹8,000) $\rightarrow$ Marks as `PAID`.
+  2. Applies the remaining ₹4,000 to Bill B $\rightarrow$ Marks as `PARTIALLY_PAID`.
+  3. Writes separate immutable audit records into `transaction_ledger`.
+
+### 3. Non-Reversible Financial FSM & Mutex Locking
+Invoices follow a strictly non-reversible Finite State Machine:
+
+$$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIALLY\_PAID} \longrightarrow \text{PAID}$$
+
+- **Row-Level Mutex Locks**: High-frequency webhooks or concurrent user double-clicks are queued via `asyncio.Lock` per invoice/account.
+- **Idempotency Guarantee**: Every processed transaction is keyed with `UNIQUE(razorpay_payment_id)`. Duplicate webhook triggers are caught gracefully without double-crediting.
+- **Link Invalidation**: When a partial or full payment is verified, any older, active Razorpay links are automatically cancelled via API to prevent duplicate charges.
+
+### 4. Anti-Hallucination Claim Verification
+If a customer sends a message stating *"I already paid yesterday via UPI"*:
+- The agent **never** hallucinates payment confirmation or marks the invoice as settled based on text alone.
+- The system checks the database for a verified `payment.captured` record. If none exists, it politely requests the UTR/transaction ID while explaining that the ledger currently reflects an open balance.
+
+### 5. Invoice Document CDN & PDF Generation
+- Dynamic B2B invoice generation using **ReportLab**.
+- Uploaded and served securely via private **Supabase Storage Buckets**.
+- Served via an authenticated proxy streaming endpoint (`GET /api/invoices/{id}/document`) with `Content-Disposition: inline`.
+- Rendered natively in the WhatsApp simulator as interactive PDF preview cards with direct download capabilities.
+
+---
+
+## 💻 Tech Stack
+
+| Layer | Technology | Description |
+| :--- | :--- | :--- |
+| **Backend Framework** | **FastAPI** (Python 3.10+) | High-performance asynchronous REST API, Webhook routers, and SSE streaming. |
+| **AI / LLM Engine** | **Google Gemini 3.5 Flash** (`google-genai`) | Function calling, empathetic debt negotiation, and multi-turn context tracking. |
+| **Payment Gateway** | **Razorpay SDK** | Dynamic payment links, webhook verification, and link lifecycle management. |
+| **Database & ORM** | **PostgreSQL** (`psycopg2-binary`) / SQLite fallback | ACID-compliant transaction ledgers, row-level locking, and multi-tenant schema. |
+| **Authentication & CDN** | **Supabase Auth & Storage** | Merchant JWT authentication and private document storage buckets. |
+| **Background Tasks** | **APScheduler & BackgroundTasks** | Async webhook reconciliation and 15-minute cron for link status polling. |
+| **Frontend UI** | **React (Vite) + Vanilla CSS** | Glassmorphic dark-mode dashboard, policy control center, and WhatsApp Simulator. |
+| **Real-Time Sync** | **Server-Sent Events (SSE)** | Low-latency state synchronization between backend webhooks and frontend UI. |
+
+---
+
+## 📁 Directory Structure
 
 ```
-c:\Users\Vansh\Desktop\TrustBridge\
+ResolveAI/
 ├── backend/
-│   ├── config.py           # Application settings & secrets
-│   ├── models.py           # Dataclass & Pydantic schemas
-│   ├── database.py         # SQLite WAL connection & FSM validator
-│   ├── guardrails.py       # Deterministic rule engine & currency math
-│   ├── razorpay_client.py  # Razorpay SDK client & reference_id idempotency
-│   ├── whatsapp_client.py  # Meta Graph API WhatsApp client
-│   ├── webhooks.py         # Meta & Razorpay webhook engine + row locking
-│   ├── session_manager.py  # Composite session manager & per-session locks
-│   ├── agent.py            # Agentic negotiator, Guardrail gateway & trace log
-│   ├── seed_data.py        # Demo invoice seeding script
-│   ├── main.py             # FastAPI server, SSE stream & REST endpoints
-│   ├── test_submodule1.py  # Submodule 1 unit test suite
-│   ├── test_submodule2.py  # Submodule 2 unit test suite
-│   ├── test_submodule3.py  # Submodule 3 unit test suite
-│   └── test_submodule4.py  # Submodule 4 unit test suite
+│   ├── config.py             # Centralized Pydantic settings & environment variables
+│   ├── auth.py               # Supabase JWT authentication & tenant resolution
+│   ├── models.py             # Pydantic data schemas & integer paise models
+│   ├── database.py           # PostgreSQL/SQLite connection, migrations & FSM validator
+│   ├── guardrails.py         # Deterministic rule engine & integer currency math
+│   ├── agent.py              # Gemini negotiation agent, tool calling & inspectable trace
+│   ├── session_manager.py    # Unified phone-centric conversation context manager
+│   ├── razorpay_client.py    # Razorpay SDK client, idempotency & link cancellations
+│   ├── whatsapp_client.py    # Meta Graph API client & interactive button payloads
+│   ├── webhooks.py           # HMAC-SHA256 webhook router & FIFO reconciler
+│   ├── storage.py            # Supabase Storage client & PDF document streaming
+│   ├── main.py               # FastAPI entrypoint, SSE stream & cron scheduler
+│   └── test_all_scenarios.py # Comprehensive automated unit & integration test suite
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx         # Dashboard, Guardrails & WhatsApp Simulator UI
-│   │   ├── index.css       # Glassmorphism dark-mode styling
-│   │   └── main.jsx        # React entrypoint
-│   ├── package.json        # Frontend dependencies
-│   └── vite.config.js      # Vite build configuration
-├── implementation_plans/   # Master roadmap & 5 submodule plans
-└── README.md               # End-to-end documentation & verification results
+│   │   ├── App.jsx           # Main Merchant Dashboard & WhatsApp Simulator UI
+│   │   ├── AuthView.jsx      # Multi-tenant Sign In & Merchant Registration
+│   │   ├── LandingPage.jsx   # Public product presentation & feature walkthrough
+│   │   ├── supabaseClient.js # Supabase JS authentication client
+│   │   ├── index.css         # Glassmorphism dark-mode styling & design tokens
+│   │   └── main.jsx          # React DOM entrypoint
+│   ├── package.json          # Frontend dependencies
+│   └── vite.config.js        # Vite bundler configuration
+├── implementation_plans/     # Master architecture specs & roadmap documentation
+├── project_storyline.md      # Detailed engineering narrative & architectural decisions
+├── Dockerfile                # Production container deployment definition
+├── requirements.txt          # Python backend dependencies
+└── README.md                 # System documentation & developer guide
 ```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- **Python**: `3.10` or higher
+- **Node.js**: `18.x` or higher (`npm` installed)
+- **PostgreSQL Database** (or default to local SQLite mode for quick testing)
+- **API Keys**:
+  - Google Gemini API Key
+  - Razorpay Key ID & Key Secret (Test mode supported)
+  - Supabase URL & Service Key (Optional for cloud storage/auth)
+
+---
+
+### Environment Configuration
+
+Create a `.env` file in the root directory:
+
+```env
+# Application Environment
+ENVIRONMENT=development
+
+# LLM Configuration
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Razorpay Credentials (Test or Live)
+RAZORPAY_KEY_ID=rzp_test_your_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_secret
+RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
+
+# Meta WhatsApp Cloud API (Optional for direct Meta webhooks)
+META_WHATSAPP_TOKEN=your_meta_token
+META_WHATSAPP_PHONE_ID=your_phone_id
+META_VERIFY_TOKEN=resolve_ai_webhook_token_2026
+
+# Database & Cache (Leave empty to use built-in SQLite fallback)
+DATABASE_URL=postgresql://postgres:password@localhost:5432/resolveai
+REDIS_URL=redis://localhost:6379/0
+
+# Supabase Auth & Storage
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key
+```
+
+---
+
+### Backend Setup
+
+1. **Create and activate a virtual environment**:
+   ```bash
+   # Windows PowerShell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+
+   # macOS / Linux
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Start the FastAPI backend server**:
+   ```bash
+   python -m uvicorn backend.main:app --reload --port 8000
+   ```
+   The API will be live at `http://localhost:8000`. Interactive Swagger documentation is available at `http://localhost:8000/docs`.
+
+---
+
+### Frontend Setup
+
+1. **Navigate to the frontend directory and install packages**:
+   ```bash
+   cd frontend
+   npm install
+   ```
+
+2. **Start the Vite development server**:
+   ```bash
+   npm run dev
+   ```
+
+3. **Access the application**:
+   Open `http://localhost:5173` in your browser.
+   - Use the **Merchant Portal** to register or click **Demo Workspace** to test instantly.
+   - Interact with the **Merchant Dashboard** to inspect invoices, adjust guardrails, and track recovered TPV.
+   - Use the **WhatsApp Simulator** to test real-time negotiations and payment link generation.
+
+---
+
+## 📡 API Reference
+
+### Core Endpoints
+
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/invoices` | List all invoices for the authenticated merchant | ✅ Bearer JWT |
+| `POST` | `/api/invoices` | Create a new master invoice (generates PDF) | ✅ Bearer JWT |
+| `GET` | `/api/invoices/{id}/document` | Stream authenticated invoice PDF inline | ❌ (Signed) |
+| `GET` | `/api/guardrails` | Fetch current merchant policy configuration | ✅ Bearer JWT |
+| `POST` | `/api/guardrails` | Update down payment %, extension days, or tone | ✅ Bearer JWT |
+| `GET` | `/api/analytics` | Fetch real-time TPV, recovered TPV, and recovery rate | ✅ Bearer JWT |
+| `POST` | `/api/chat/message` | Send customer message to negotiation agent | ❌ Public / Demo |
+| `POST` | `/api/chat/reset` | Reset customer conversation session | ❌ Public / Demo |
+| `GET` | `/api/events` | Server-Sent Events (SSE) live update stream | ❌ Public |
+
+### Webhook Endpoints
+
+| Method | Endpoint | Description | Verification |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/webhooks/razorpay` | Ingests `payment.captured` & `payment_link.paid` events | HMAC-SHA256 Signature |
+| `GET` | `/api/webhooks/whatsapp` | Meta WhatsApp Cloud API verification challenge | `hub.verify_token` |
+| `POST` | `/api/webhooks/whatsapp` | Ingests live WhatsApp customer text & button replies | Payload Signature |
+
+---
+
+## 🧪 Verification & Automated Test Suite
+
+Resolve.ai includes a comprehensive test suite covering cryptographic signatures, integer paise math, state machine integrity, and multi-bill allocation.
+
+```bash
+# Run the complete test suite
+python backend/test_all_scenarios.py
+```
+
+### Verified Audit Criteria:
+- ✅ **Cryptographic Timing-Safe HMAC-SHA256 Verification**
+- ✅ **Zero-Float Integer Paise Conversions**
+- ✅ **Guardrail Ceiling & Floor Rejections**
+- ✅ **Non-Reversible State Transitions** (`UNPAID` $\rightarrow$ `PAID`)
+- ✅ **Multi-Bill FIFO Allocation Cascades**
+- ✅ **Unique Transaction Ledger Idempotency**
+
+---
+
+## 🏢 Multi-Tenant SaaS Architecture
+
+Resolve.ai is built from the ground up to support multiple distinct businesses simultaneously:
+1. **Isolated Data**: Every database query is strictly scoped by `merchant_id`.
+2. **Custom Policy Profiles**: Each merchant configures their own negotiation guardrails, tone of voice, and discount thresholds.
+3. **Organization Profile Management**: Real-time legal entity name updates via `PUT /api/merchant/profile`.
+4. **Live SSE Channeling**: Real-time events broadcast dynamically to matching merchant sessions.
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the `LICENSE` file for details.
