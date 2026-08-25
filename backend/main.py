@@ -1104,6 +1104,7 @@ async def create_checkout_order(req: CreateOrderRequest):
             "order_id": order["id"],
             "amount": order["amount"],
             "currency": order["currency"],
+            "key_id": settings.RAZORPAY_KEY_ID,
             "invoice_id": req.invoice_id
         }
     except Exception as e:

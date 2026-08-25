@@ -801,7 +801,11 @@ export default function App() {
       }
 
       const orderData = await orderRes.json();
-      const razorpayKey = import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_TSnypXFHb8t7Sc';
+      const razorpayKey = orderData.key_id || import.meta.env.VITE_RAZORPAY_KEY_ID;
+
+      if (!razorpayKey) {
+        throw new Error("Razorpay Key ID was not returned by the backend server. Please verify RAZORPAY_KEY_ID is configured in the backend environment.");
+      }
 
       // 2. Open Razorpay Checkout Modal
       const options = {
