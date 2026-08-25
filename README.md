@@ -143,14 +143,18 @@ AI agents should **never** have direct, uncontrolled access to banking or paymen
 When an account has multiple overdue invoices (e.g., Bill A for ₹8,000 and Bill B for ₹9,000):
 - If the customer offers a lump-sum payment (e.g., ₹12,000 towards their balance), the agent identifies an `account_settlement` scope.
 - Upon payment capture, the **FIFO Webhook Reconciler** acquires an account-level mutex lock, queries all unpaid invoices ordered by `due_date ASC`, and cascades the payment:
-  1. Fully satisfies Bill A (₹8,000) $\rightarrow$ Marks as `PAID`.
-  2. Applies the remaining ₹4,000 to Bill B $\rightarrow$ Marks as `PARTIALLY_PAID`.
+  1. Fully satisfies Bill A (₹8,000) ➔ Marks as `PAID`.
+  2. Applies the remaining ₹4,000 to Bill B ➔ Marks as `PARTIALLY_PAID`.
   3. Writes separate immutable audit records into `transaction_ledger`.
 
 ### 3. Non-Reversible Financial FSM & Mutex Locking
 Invoices follow a strictly non-reversible Finite State Machine:
 
-$$\text{UNPAID} \longrightarrow \text{NEGOTIATING} \longrightarrow \text{PARTIALLY\_PAID} \longrightarrow \text{PAID}$$
+```
+┌──────────┐      ┌─────────────┐      ┌────────────────┐      ┌──────────┐
+│  UNPAID  │ ───► │ NEGOTIATING │ ───► │ PARTIALLY_PAID │ ───► │   PAID   │
+└──────────┘      └─────────────┘      └────────────────┘      └──────────┘
+```
 
 - **Row-Level Mutex Locks**: High-frequency webhooks or concurrent user double-clicks are queued via `asyncio.Lock` per invoice/account.
 - **Idempotency Guarantee**: Every processed transaction is keyed with `UNIQUE(razorpay_payment_id)`. Duplicate webhook triggers are caught gracefully without double-crediting.
@@ -352,7 +356,7 @@ python backend/test_all_scenarios.py
 - ✅ **Cryptographic Timing-Safe HMAC-SHA256 Verification**
 - ✅ **Zero-Float Integer Paise Conversions**
 - ✅ **Guardrail Ceiling & Floor Rejections**
-- ✅ **Non-Reversible State Transitions** (`UNPAID` $\rightarrow$ `PAID`)
+- ✅ **Non-Reversible State Transitions** (`UNPAID` ➔ `PAID`)
 - ✅ **Multi-Bill FIFO Allocation Cascades**
 - ✅ **Unique Transaction Ledger Idempotency**
 
