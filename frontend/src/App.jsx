@@ -100,7 +100,27 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const [merchantSession, setMerchantSession] = useState(null);
+  const [merchantSession, setMerchantSession] = useState(() => {
+    try {
+      const saved = localStorage.getItem('resolveai_merchant_session');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const updateMerchantSession = (session) => {
+    if (session) {
+      try {
+        localStorage.setItem('resolveai_merchant_session', JSON.stringify(session));
+      } catch (e) {
+        console.error('Failed to save session:', e);
+      }
+    } else {
+      localStorage.removeItem('resolveai_merchant_session');
+    }
+    setMerchantSession(session);
+  };
 
   useEffect(() => {
     if (merchantSession && !window.location.pathname.includes('/dashboard')) {
@@ -351,12 +371,16 @@ export default function App() {
   // Supabase Auth Session Management
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setMerchantSession(session);
+      if (session) {
+        updateMerchantSession(session);
+      }
       setIsAuthChecking(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setMerchantSession(session);
+      if (session) {
+        updateMerchantSession(session);
+      }
       setIsAuthChecking(false);
     });
 
@@ -365,8 +389,15 @@ export default function App() {
 
   const getAuthHeaders = () => {
     const headers = { 'Content-Type': 'application/json' };
-    if (merchantSession?.access_token) {
-      headers['Authorization'] = `Bearer ${merchantSession.access_token}`;
+    let token = merchantSession?.access_token;
+    if (!token) {
+      try {
+        const saved = localStorage.getItem('resolveai_merchant_session');
+        token = saved ? JSON.parse(saved)?.access_token : null;
+      } catch (e) {}
+    }
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
   };
@@ -996,7 +1027,7 @@ export default function App() {
           />
         ) : (
           <AuthView
-            onAuthSuccess={setMerchantSession}
+            onAuthSuccess={updateMerchantSession}
             showToast={showToast}
             onBackToLanding={() => navigateTo('landing')}
           />
@@ -1138,7 +1169,7 @@ export default function App() {
           <button
             onClick={async () => {
               await supabase.auth.signOut();
-              setMerchantSession(null);
+              updateMerchantSession(null);
               setMerchantProfile(null);
               navigateTo('landing');
               showToast('Signed out of Merchant Portal.', 'info');
