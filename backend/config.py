@@ -33,6 +33,7 @@ class Settings(BaseModel):
 
     # LLM API Credentials
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
     # Merchant Default Guardrails
     DEFAULT_MIN_PARTIAL_PAYMENT_PCT: float = 30.0  # Min 30% of remaining balance

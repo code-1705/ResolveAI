@@ -19,46 +19,48 @@ from backend.guardrails import GuardrailEngine, inr_to_paise, paise_to_inr
 from backend.session_manager import SessionManager, session_manager, get_session_lock
 from backend.razorpay_client import razorpay_client
 
-TOOLS_DECLARATION = [
+OPENAI_TOOLS = [
     {
-        "functionDeclarations": [
-            {
-                "name": "propose_settlement_payment",
-                "description": "Call this tool whenever the customer proposes a partial payment amount/percentage or requests a due date extension. Evaluates merchant guardrails and generates a Razorpay payment link if approved.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "proposed_amount_inr": {
-                            "type": "NUMBER",
-                            "description": "The proposed initial payment amount in INR (numeric float)."
-                        },
-                        "extension_days": {
-                            "type": "INTEGER",
-                            "description": "The requested due date extension in days (numeric int, e.g. 7, 14)."
-                        },
-                        "invoice_scope": {
-                            "type": "STRING",
-                            "description": "The specific invoice_id (e.g., 'inv_SME_005') they are paying, OR the word 'ALL' if they are making an account-level payment towards their total balance."
-                        }
+        "type": "function",
+        "function": {
+            "name": "propose_settlement_payment",
+            "description": "Call this tool whenever the customer proposes a partial payment amount/percentage or requests a due date extension. Evaluates merchant guardrails and generates a Razorpay payment link if approved.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "proposed_amount_inr": {
+                        "type": "number",
+                        "description": "The proposed initial payment amount in INR (numeric float)."
                     },
-                    "required": ["proposed_amount_inr", "extension_days", "invoice_scope"]
-                }
-            },
-            {
-                "name": "escalate_to_human",
-                "description": "Call this tool when the customer is extremely hostile, threatens legal action, disputes the invoice validity entirely, or demands human management.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "reason": {
-                            "type": "STRING",
-                            "description": "Reason for human escalation."
-                        }
+                    "extension_days": {
+                        "type": "integer",
+                        "description": "The requested due date extension in days (numeric int, e.g. 7, 14)."
                     },
-                    "required": ["reason"]
-                }
+                    "invoice_scope": {
+                        "type": "string",
+                        "description": "The specific invoice_id (e.g., 'inv_SME_005') they are paying, OR the word 'ALL' if they are making an account-level payment towards their total balance."
+                    }
+                },
+                "required": ["proposed_amount_inr", "extension_days", "invoice_scope"]
             }
-        ]
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "escalate_to_human",
+            "description": "Call this tool when the customer is extremely hostile, threatens legal action, disputes the invoice validity entirely, or demands human management.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "Reason for human escalation."
+                    }
+                },
+                "required": ["reason"]
+            }
+        }
     }
 ]
 
@@ -178,15 +180,15 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             }]
         }
 
-    def _build_gemini_contents(self, messages: List[ChatMessage]) -> List[Dict[str, Any]]:
-        contents = []
+    def _build_openai_messages(self, messages: List[ChatMessage]) -> List[Dict[str, Any]]:
+        msgs = []
         for msg in messages:
-            role = "user" if msg.sender == "user" else "model"
-            contents.append({
+            role = "user" if msg.sender == "user" else "assistant"
+            msgs.append({
                 "role": role,
-                "parts": [{"text": msg.text}]
+                "content": msg.text
             })
-        return contents
+        return msgs
 
     async def process_customer_message(
         self,
@@ -252,13 +254,18 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                 }
 
             system_instruction = self._build_system_instruction(invoice, guardrails)
-            contents = self._build_gemini_contents(session.messages)
+            sys_text = system_instruction["parts"][0]["text"]
+            openai_messages = [{"role": "system", "content": sys_text}] + self._build_openai_messages(session.messages)
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            url = "https://api.openai.com/v1/chat/completions"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}"
+            }
             payload = {
-                "systemInstruction": system_instruction,
-                "contents": contents,
-                "tools": TOOLS_DECLARATION
+                "model": "gpt-5.4-nano",
+                "messages": openai_messages,
+                "tools": OPENAI_TOOLS
             }
 
             resp_text = None
@@ -267,183 +274,141 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             payment_amount_paise = None
             guardrail_passed = True
             guardrail_check_status = "PASS"
-            thought_summary = "Processed natural conversational turn with Gemini 3.6 Flash."
+            thought_summary = "Processed natural conversational turn with OpenAI gpt-5.4-nano."
 
             try:
-                resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=8.0)
+                resp = requests.post(url, headers=headers, json=payload, timeout=8.0)
                 if resp.status_code != 200:
-                    print(f"[Gemini API Error 1]: {resp.status_code} - {resp.text}")
+                    print(f"[OpenAI API Error 1]: {resp.status_code} - {resp.text}")
                 resp.raise_for_status()
                 if resp.status_code == 200:
                     res_data = resp.json()
-                    candidates = res_data.get("candidates", [])
-                    if candidates:
-                        candidate = candidates[0].get("content", {})
-                        parts = candidate.get("parts", [])
+                    message = res_data.get("choices", [{}])[0].get("message", {})
+                    
+                    if message.get("tool_calls"):
+                        tool_call = message["tool_calls"][0]
+                        fn_name = tool_call["function"]["name"]
+                        fn_args = json.loads(tool_call["function"]["arguments"])
+                        tool_call_id = tool_call["id"]
 
-                        function_call = None
-                        for part in parts:
-                            if "functionCall" in part:
-                                function_call = part["functionCall"]
-                                break
+                        if fn_name == "escalate_to_human":
+                            invoice.requires_human_attention = True
+                            upsert_invoice(invoice)
+                            resp_text = (
+                                "I understand your concern. I have escalated your case to a senior manager "
+                                "who will contact you directly to resolve this."
+                            )
+                            guardrail_check_status = "ESCALATED"
+                            thought_summary = f"Customer escalated: {fn_args.get('reason', 'hostile dialogue')}"
 
-                        if function_call:
-                            fn_name = function_call["name"]
-                            fn_args = function_call.get("args", {})
+                        elif fn_name == "propose_settlement_payment":
+                            proposed_amount_inr = float(fn_args.get("proposed_amount_inr", 0))
+                            extension_days = int(fn_args.get("extension_days", guardrails.max_extension_days))
+                            invoice_scope = fn_args.get("invoice_scope", invoice_id)
 
-                            if fn_name == "escalate_to_human":
-                                invoice.requires_human_attention = True
-                                upsert_invoice(invoice)
-                                resp_text = (
-                                    "I understand your concern. I have escalated your case to a senior manager "
-                                    "who will contact you directly to resolve this."
-                                )
-                                guardrail_check_status = "ESCALATED"
-                                thought_summary = f"Customer escalated: {fn_args.get('reason', 'hostile dialogue')}"
+                            guardrail_passed, reason, guardrail_meta = self.guardrail_engine.validate_proposal(
+                                invoice_id=invoice_scope,
+                                proposed_amount_inr=proposed_amount_inr,
+                                extension_days=extension_days,
+                                customer_phone=invoice.customer_phone
+                            )
 
-                            elif fn_name == "propose_settlement_payment":
-                                proposed_amount_inr = float(fn_args.get("proposed_amount_inr", 0))
-                                extension_days = int(fn_args.get("extension_days", guardrails.max_extension_days))
-                                invoice_scope = fn_args.get("invoice_scope", invoice_id)
+                            if guardrail_passed:
+                                approved_amount_inr = guardrail_meta["approved_amount_inr"]
+                                approved_extension = guardrail_meta["approved_extension_days"]
 
-                                guardrail_passed, reason, guardrail_meta = self.guardrail_engine.validate_proposal(
-                                    invoice_id=invoice_scope,
-                                    proposed_amount_inr=proposed_amount_inr,
-                                    extension_days=extension_days,
-                                    customer_phone=invoice.customer_phone
-                                )
-
-                                if guardrail_passed:
-                                    approved_amount_inr = guardrail_meta["approved_amount_inr"]
-                                    approved_extension = guardrail_meta["approved_extension_days"]
-
-                                    if invoice_scope == "ALL":
-                                        ref_id = f"account_settlement_{invoice.customer_phone}_{len(session.messages)}"
-                                        desc = f"Account Settlement for {invoice.customer_phone}"
-                                    else:
-                                        ref_id = f"ref_{session_id[:16]}_t{len(session.messages)}"
-                                        desc = f"Settlement for Invoice {invoice_scope}"
-
-                                    effective_days = min(approved_extension, 180)
-                                    expiry_timestamp = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=effective_days)).replace(hour=23, minute=59, second=59).timestamp())
-
-                                    # Convert INR to paise for Razorpay
-                                    amount_in_paise = int(round(approved_amount_inr * 100))
-                                    payment_amount_paise = amount_in_paise
-                                    link_res = razorpay_client.create_payment_link(
-                                        amount_in_paise=amount_in_paise,
-                                        description=desc,
-                                        customer_info={
-                                            "name": invoice.customer_name,
-                                            "phone": invoice.customer_phone,
-                                            "invoice_id": invoice_scope
-                                        },
-                                        expiry_timestamp=expiry_timestamp,
-                                        reference_id=ref_id
-                                    )
-
-                                    payment_link_url = link_res["short_url"]
-                                    tool_executed = f"create_razorpay_payment_link(₹{approved_amount_inr:,.2f})"
-                                    guardrail_check_status = "PASS"
-                                    thought_summary = f"Approved settlement ₹{approved_amount_inr:,.2f} with link {payment_link_url}."
-
-                                    fn_response_part = {
-                                        "role": "user",
-                                        "parts": [{
-                                            "functionResponse": {
-                                                "name": "propose_settlement_payment",
-                                                "response": {
-                                                    "status": "APPROVED",
-                                                    "approved_amount_inr": approved_amount_inr,
-                                                    "payment_link_url": payment_link_url,
-                                                    "instructions": f"The proposal was APPROVED. Confirm ₹{approved_amount_inr:,.2f} and include the link: {payment_link_url}"
-                                                }
-                                            }
-                                        }]
-                                    }
-
-                                    second_contents = list(contents)
-                                    second_contents.append(candidate)
-                                    second_contents.append(fn_response_part)
-
-                                    second_payload = {
-                                        "systemInstruction": system_instruction,
-                                        "contents": second_contents
-                                    }
-
-                                    resp2 = requests.post(url, headers={"Content-Type": "application/json"}, json=second_payload, timeout=6.0)
-                                    if resp2.status_code == 200:
-                                        res2_data = resp2.json()
-                                        c2_parts = res2_data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                                        for p in c2_parts:
-                                            if "text" in p:
-                                                resp_text = p["text"].strip()
-                                                break
-
-                                    if not resp_text:
-                                        resp_text = (
-                                            f"Here is your secure payment link for ₹{approved_amount_inr:,.2f}: {payment_link_url}\n"
-                                            "Once paid, your account balance will update instantly in real-time."
-                                        )
-
+                                if invoice_scope == "ALL":
+                                    ref_id = f"account_settlement_{invoice.customer_phone}_{len(session.messages)}"
+                                    desc = f"Account Settlement for {invoice.customer_phone}"
                                 else:
-                                    suggested_inr = guardrail_meta.get("suggested_amount_inr", invoice.remaining_amount_inr * 0.3)
-                                    suggested_ext = guardrail_meta.get("max_allowed_extension_days", 14)
-                                    guardrail_check_status = "REJECTED"
-                                    thought_summary = f"Proposal rejected ({reason}). Counter-offered ₹{suggested_inr:,.2f}."
+                                    ref_id = f"ref_{session_id[:16]}_t{len(session.messages)}"
+                                    desc = f"Settlement for Invoice {invoice_scope}"
 
-                                    fn_response_part = {
-                                        "role": "user",
-                                        "parts": [{
-                                            "functionResponse": {
-                                                "name": "propose_settlement_payment",
-                                                "response": {
-                                                    "status": "REJECTED",
-                                                    "reason": reason,
-                                                    "suggested_amount_inr": suggested_inr,
-                                                    "suggested_extension_days": suggested_ext,
-                                                    "instructions": f"Proposal REJECTED ({reason}). Politely counter-offer ₹{suggested_inr:,.2f} with up to {suggested_ext} days extension."
-                                                }
-                                            }
-                                        }]
-                                    }
+                                effective_days = min(approved_extension, 180)
+                                expiry_timestamp = int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=effective_days)).replace(hour=23, minute=59, second=59).timestamp())
 
-                                    second_contents = list(contents)
-                                    second_contents.append(candidate)
-                                    second_contents.append(fn_response_part)
+                                amount_in_paise = int(round(approved_amount_inr * 100))
+                                payment_amount_paise = amount_in_paise
+                                link_res = razorpay_client.create_payment_link(
+                                    amount_in_paise=amount_in_paise,
+                                    description=desc,
+                                    customer_info={
+                                        "name": invoice.customer_name,
+                                        "phone": invoice.customer_phone,
+                                        "invoice_id": invoice_scope
+                                    },
+                                    expiry_timestamp=expiry_timestamp,
+                                    reference_id=ref_id
+                                )
 
-                                    second_payload = {
-                                        "systemInstruction": system_instruction,
-                                        "contents": second_contents
-                                    }
+                                payment_link_url = link_res["short_url"]
+                                tool_executed = f"create_razorpay_payment_link(₹{approved_amount_inr:,.2f})"
+                                guardrail_check_status = "PASS"
+                                thought_summary = f"Approved settlement ₹{approved_amount_inr:,.2f} with link {payment_link_url}."
 
-                                    resp2 = requests.post(url, headers={"Content-Type": "application/json"}, json=second_payload, timeout=6.0)
-                                    if resp2.status_code != 200:
-                                        print(f"[Gemini API Error 2]: {resp2.status_code} - {resp2.text}")
-                                    resp2.raise_for_status()
-                                    if resp2.status_code == 200:
-                                        res2_data = resp2.json()
-                                        c2_parts = res2_data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                                        for p in c2_parts:
-                                            if "text" in p:
-                                                resp_text = p["text"].strip()
-                                                break
+                                fn_response = {
+                                    "status": "APPROVED",
+                                    "approved_amount_inr": approved_amount_inr,
+                                    "payment_link_url": payment_link_url,
+                                    "instructions": f"The proposal was APPROVED. Confirm ₹{approved_amount_inr:,.2f} and include the link: {payment_link_url}"
+                                }
+                            else:
+                                suggested_inr = guardrail_meta.get("suggested_amount_inr", invoice.remaining_amount_inr * 0.3)
+                                suggested_ext = guardrail_meta.get("max_allowed_extension_days", 14)
+                                guardrail_check_status = "REJECTED"
+                                thought_summary = f"Proposal rejected ({reason}). Counter-offered ₹{suggested_inr:,.2f}."
 
-                                    if not resp_text:
-                                        resp_text = (
-                                            f"Thank you for your offer. However, {reason}. "
-                                            f"Based on merchant policy, I can approve an initial payment of ₹{suggested_inr:,.2f} "
-                                            f"with a date extension up to {suggested_ext} days. Would you like me to generate a payment link?"
-                                        )
+                                fn_response = {
+                                    "status": "REJECTED",
+                                    "reason": reason,
+                                    "suggested_amount_inr": suggested_inr,
+                                    "suggested_extension_days": suggested_ext,
+                                    "instructions": f"Proposal REJECTED ({reason}). Politely counter-offer ₹{suggested_inr:,.2f} with up to {suggested_ext} days extension."
+                                }
 
-                        else:
-                            # Direct text response from Gemini (greetings, questions, conversational Q&A)
-                            for part in parts:
-                                if "text" in part:
-                                    resp_text = part["text"].strip()
-                                    break
+                            second_messages = list(openai_messages)
+                            second_messages.append(message)
+                            second_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": fn_name,
+                                "content": json.dumps(fn_response)
+                            })
+
+                            second_payload = {
+                                "model": "gpt-5.4-nano",
+                                "messages": second_messages,
+                                "tools": OPENAI_TOOLS
+                            }
+
+                            resp2 = requests.post(url, headers=headers, json=second_payload, timeout=6.0)
+                            if resp2.status_code != 200:
+                                print(f"[OpenAI API Error 2]: {resp2.status_code} - {resp2.text}")
+                            resp2.raise_for_status()
+                            if resp2.status_code == 200:
+                                res2_data = resp2.json()
+                                resp_text = res2_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                                if resp_text:
+                                    resp_text = resp_text.strip()
+
+                            if not resp_text:
+                                if guardrail_passed:
+                                    resp_text = (
+                                        f"Here is your secure payment link for ₹{approved_amount_inr:,.2f}: {payment_link_url}\n"
+                                        "Once paid, your account balance will update instantly in real-time."
+                                    )
+                                else:
+                                    resp_text = (
+                                        f"Thank you for your offer. However, {reason}. "
+                                        f"Based on merchant policy, I can approve an initial payment of ₹{suggested_inr:,.2f} "
+                                        f"with a date extension up to {suggested_ext} days. Would you like me to generate a payment link?"
+                                    )
+                    else:
+                        resp_text = message.get("content", "")
+                        if resp_text:
+                            resp_text = resp_text.strip()
             except Exception as e:
-                print(f"[Gemini Agent Error]: {e}")
+                print(f"[OpenAI Agent Error]: {e}")
 
             # Check if customer asked for invoice document or if media documents should be attached
             media_documents = []
