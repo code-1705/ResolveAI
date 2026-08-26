@@ -271,6 +271,9 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
 
             try:
                 resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=8.0)
+                if resp.status_code != 200:
+                    print(f"[Gemini API Error 1]: {resp.status_code} - {resp.text}")
+                resp.raise_for_status()
                 if resp.status_code == 200:
                     res_data = resp.json()
                     candidates = res_data.get("candidates", [])
@@ -415,6 +418,9 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                                     }
 
                                     resp2 = requests.post(url, headers={"Content-Type": "application/json"}, json=second_payload, timeout=6.0)
+                                    if resp2.status_code != 200:
+                                        print(f"[Gemini API Error 2]: {resp2.status_code} - {resp2.text}")
+                                    resp2.raise_for_status()
                                     if resp2.status_code == 200:
                                         res2_data = resp2.json()
                                         c2_parts = res2_data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
@@ -457,11 +463,14 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                 if media_documents:
                     resp_text = f"Here are your official invoice documents for your review below. Please let me know if you would like to proceed with payment or discuss a settlement:"
                 else:
-                    resp_text = (
-                        f"Hello {invoice.customer_name}! We are checking on your invoice '{invoice.invoice_id}' with a remaining balance of "
-                        f"₹{invoice.remaining_amount_inr:,.2f} (Due: {invoice.due_date}). "
-                        f"How can we best assist you with your account today?"
-                    )
+                    if len(session.messages) > 1:
+                        resp_text = "I apologize, but I am experiencing a temporary connection issue. Could you please wait a moment and try sending your message again?"
+                    else:
+                        resp_text = (
+                            f"Hello {invoice.customer_name}! We are checking on your invoice '{invoice.invoice_id}' with a remaining balance of "
+                            f"₹{invoice.remaining_amount_inr:,.2f} (Due: {invoice.due_date}). "
+                            f"How can we best assist you with your account today?"
+                        )
 
 
             # Record Agent Response
