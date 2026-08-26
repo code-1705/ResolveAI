@@ -348,7 +348,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                                     thought_summary = f"Approved settlement ₹{approved_amount_inr:,.2f} with link {payment_link_url}."
 
                                     fn_response_part = {
-                                        "role": "function",
+                                        "role": "user",
                                         "parts": [{
                                             "functionResponse": {
                                                 "name": "propose_settlement_payment",
@@ -393,7 +393,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                                     thought_summary = f"Proposal rejected ({reason}). Counter-offered ₹{suggested_inr:,.2f}."
 
                                     fn_response_part = {
-                                        "role": "function",
+                                        "role": "user",
                                         "parts": [{
                                             "functionResponse": {
                                                 "name": "propose_settlement_payment",
