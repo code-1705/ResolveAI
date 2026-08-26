@@ -157,6 +157,21 @@ class RazorpayClient:
         response.raise_for_status()
         return response.json()
 
+    def get_payment(self, payment_id: str) -> Dict[str, Any]:
+        """Fetches a specific payment by ID to securely verify amounts."""
+        if self.is_mock:
+            return {"id": payment_id, "status": "captured"}
+
+        response = requests.get(
+            f"{self.base_url}/payments/{payment_id}",
+            auth=(self.key_id, self.key_secret),
+            headers=self._get_headers(),
+            timeout=10.0
+        )
+        if response.ok:
+            return response.json()
+        return {}
+
     def get_recent_payments(self) -> List[Dict[str, Any]]:
         """Fetches recent payments for active reconciliation fallback."""
         if self.is_mock:

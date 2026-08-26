@@ -1135,6 +1135,10 @@ async def verify_checkout_payment(req: VerifyPaymentRequest):
     if req.invoice_id:
         invoice = get_invoice(req.invoice_id)
         if invoice and invoice.remaining_amount_paise > 0:
+            # Securely fetch actual payment amount from Razorpay to handle partial payments correctly
+            payment_details = razorpay_client.get_payment(req.razorpay_payment_id)
+            actual_paid_amount = payment_details.get("amount") or invoice.remaining_amount_paise
+
             mock_webhook_payload = {
                 "event": "payment.captured",
                 "payload": {
@@ -1142,14 +1146,14 @@ async def verify_checkout_payment(req: VerifyPaymentRequest):
                         "entity": {
                             "id": req.razorpay_payment_id,
                             "order_id": req.razorpay_order_id,
-                            "amount": invoice.remaining_amount_paise,
+                            "amount": actual_paid_amount,
                             "method": "CARD",
                             "notes": {"invoice_id": req.invoice_id}
                         }
                     }
                 }
             }
-            reconcile_res = await reconcile_payment_event(mock_webhook_payload, )
+            reconcile_res = await reconcile_payment_event(mock_webhook_payload)
             if reconcile_res.get("status") == "reconciled":
                 await broadcast_sse_event("payment_reconciled", reconcile_res)
 

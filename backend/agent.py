@@ -264,6 +264,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             resp_text = None
             tool_executed = None
             payment_link_url = None
+            payment_amount_paise = None
             guardrail_passed = True
             guardrail_check_status = "PASS"
             thought_summary = "Processed natural conversational turn with Gemini 2.5 Flash."
@@ -325,6 +326,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
 
                                     # Convert INR to paise for Razorpay
                                     amount_in_paise = int(round(approved_amount_inr * 100))
+                                    payment_amount_paise = amount_in_paise
                                     link_res = razorpay_client.create_payment_link(
                                         amount_in_paise=amount_in_paise,
                                         description=desc,
@@ -470,6 +472,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                 metadata={
                     "tool_executed": tool_executed,
                     "payment_link_url": payment_link_url,
+                    "payment_amount_paise": payment_amount_paise,
                     "guardrail_passed": guardrail_passed,
                     "media_documents": media_documents
                 }
@@ -478,6 +481,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             agent_metadata = {
                 "tool_executed": tool_executed,
                 "payment_link_url": payment_link_url,
+                "payment_amount_paise": payment_amount_paise,
                 "guardrail_passed": guardrail_passed,
                 "media_documents": media_documents
             }

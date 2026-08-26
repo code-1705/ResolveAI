@@ -808,7 +808,7 @@ export default function App() {
   };
 
   // Razorpay Standard Web Checkout Modal Handler
-  const handleRazorpayCheckout = async (inv) => {
+  const handleRazorpayCheckout = async (inv, customAmountInPaise = null) => {
     if (!inv || inv.remaining_amount_paise < 100) {
       showToast("Invoice remaining amount must be at least ₹1.00 (100 paise).", "error");
       return;
@@ -818,12 +818,13 @@ export default function App() {
       // 1. Call Backend POST /api/create-order
       const cleanInvId = String(inv.invoice_id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(-15);
       const safeReceipt = `rcpt_${cleanInvId}_${Date.now()}`.slice(0, 40);
+      const finalAmountPaise = customAmountInPaise ? Math.round(Number(customAmountInPaise)) : Math.round(Number(inv.remaining_amount_paise));
 
       const orderRes = await fetch(`${API_BASE}/api/create-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount_in_paise: Math.round(Number(inv.remaining_amount_paise)),
+          amount_in_paise: finalAmountPaise,
           invoice_id: inv.invoice_id,
           receipt: safeReceipt
         })
@@ -866,8 +867,8 @@ export default function App() {
 
             if (verifyRes.ok) {
               showToast(`Payment Verified Successfully! (ID: ${response.razorpay_payment_id})`, "success");
-              fetchData();
-              fetchChatHistory(inv);
+              // Removed fetchData() and fetchChatHistory() here to prevent full UI refresh/flicker.
+              // The backend automatically broadcasts an SSE 'chat_message_processed' event and updates the invoice state.
             } else {
               const verifyErr = await verifyRes.json();
               showToast(`Payment Verification Failed: ${verifyErr.detail || "Signature Mismatch"}`, "error");
@@ -2224,7 +2225,7 @@ export default function App() {
                       {msg.sender === 'agent' && (msg.metadata?.payment_link_url || msg.text.includes('https://rzp.io/')) && selectedInvoice && selectedInvoice.remaining_amount_inr > 0 && (
                         <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--border-color)' }}>
                           <button
-                            onClick={() => handleRazorpayCheckout(selectedInvoice)}
+                            onClick={() => handleRazorpayCheckout(selectedInvoice, msg.metadata?.payment_amount_paise)}
                             style={{
                               width: '100%',
                               padding: '8px 14px',
