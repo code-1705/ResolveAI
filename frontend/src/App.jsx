@@ -816,13 +816,16 @@ export default function App() {
 
     try {
       // 1. Call Backend POST /api/create-order
+      const cleanInvId = String(inv.invoice_id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(-15);
+      const safeReceipt = `rcpt_${cleanInvId}_${Date.now()}`.slice(0, 40);
+
       const orderRes = await fetch(`${API_BASE}/api/create-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount_in_paise: inv.remaining_amount_paise,
+          amount_in_paise: Math.round(Number(inv.remaining_amount_paise)),
           invoice_id: inv.invoice_id,
-          receipt: `rcpt_${inv.invoice_id}_${Date.now()}`
+          receipt: safeReceipt
         })
       });
 

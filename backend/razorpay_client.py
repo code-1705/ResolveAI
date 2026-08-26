@@ -24,6 +24,14 @@ class RazorpayClient:
         is_test_env = bool(os.getenv("PYTEST_CURRENT_TEST")) or "unittest" in os.environ.get("_", "") or "unittest" in sys.argv[0] or any("unittest" in arg for arg in sys.argv)
         self.is_mock = is_test_env or self.key_id.startswith("rzp_test_mock") or not self.key_id
 
+    def _get_headers(self) -> Dict[str, str]:
+        """Returns standard headers required by Razorpay REST API to prevent 406 Not Acceptable errors."""
+        return {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "ResolveAI-Razorpay/1.0 (Python/requests)"
+        }
+
     def create_payment_link(
         self,
         amount_in_paise: int,
@@ -40,7 +48,7 @@ class RazorpayClient:
         3. Expiry timestamp capped at 180 days.
         """
         # Truncate reference_id if needed to strictly obey Razorpay 40-char max limit
-        safe_reference_id = reference_id[:40]
+        safe_reference_id = str(reference_id)[:40]
 
         # Sanitize customer contact number for Razorpay API (10 digits)
         raw_phone = customer_info.get("phone", "9876543210")
@@ -51,13 +59,13 @@ class RazorpayClient:
             clean_contact = "9876543210"
 
         payload = {
-            "amount": amount_in_paise,
+            "amount": int(amount_in_paise),
             "currency": "INR",
             "accept_partial": False,
             "reference_id": safe_reference_id,
             "description": description,
             "notes": {
-                "invoice_id": customer_info.get("invoice_id", "")
+                "invoice_id": str(customer_info.get("invoice_id", ""))
             },
             "customer": {
                 "name": customer_info.get("name", "Valued Customer"),
@@ -81,7 +89,7 @@ class RazorpayClient:
             return {
                 "id": mock_id,
                 "entity": "payment_link",
-                "amount": amount_in_paise,
+                "amount": int(amount_in_paise),
                 "amount_paid": 0,
                 "currency": "INR",
                 "short_url": f"https://rzp.io/i/{link_code}",
@@ -101,6 +109,7 @@ class RazorpayClient:
             response = requests.post(
                 f"{self.base_url}/payment_links",
                 auth=(self.key_id, self.key_secret),
+                headers=self._get_headers(),
                 json=payload,
                 timeout=10.0
             )
@@ -142,6 +151,7 @@ class RazorpayClient:
         response = requests.post(
             f"{self.base_url}/payment_links/{payment_link_id}/cancel",
             auth=(self.key_id, self.key_secret),
+            headers=self._get_headers(),
             timeout=10.0
         )
         response.raise_for_status()
@@ -155,11 +165,13 @@ class RazorpayClient:
         response = requests.get(
             f"{self.base_url}/payments",
             auth=(self.key_id, self.key_secret),
+            headers=self._get_headers(),
             timeout=10.0
         )
         if response.ok:
             return response.json().get("items", [])
         return []
+
     def verify_webhook_signature(self, raw_body_bytes: bytes, signature: str, secret: Optional[str] = None) -> bool:
         """
         Verifies Razorpay HMAC-SHA256 signature strictly over RAW BYTES before JSON deserialization.
@@ -184,17 +196,20 @@ class RazorpayClient:
     ) -> Dict[str, Any]:
         """
         Creates a Razorpay Standard Web Checkout Order.
-        Validates amount >= 100 paise (₹1 minimum).
+        Validates amount >= 100 paise (₹1 minimum) and ensures integer amount, 40-char max receipt, and proper JSON headers.
         """
-        if amount_in_paise < 100:
+        int_amount = int(amount_in_paise)
+        if int_amount < 100:
             raise ValueError("Amount must be at least 100 paise (₹1.00)")
 
-        safe_receipt = receipt or f"rcpt_{int(time.time())}"
+        safe_receipt = str(receipt or f"rcpt_{int(time.time())}")[:40]
+        safe_notes = {str(k): str(v) for k, v in (notes or {}).items()}
+
         payload = {
-            "amount": amount_in_paise,
+            "amount": int_amount,
             "currency": "INR",
             "receipt": safe_receipt,
-            "notes": notes or {}
+            "notes": safe_notes
         }
 
         if self.is_mock:
@@ -202,28 +217,39 @@ class RazorpayClient:
             return {
                 "id": mock_order_id,
                 "entity": "order",
-                "amount": amount_in_paise,
+                "amount": int_amount,
                 "amount_paid": 0,
-                "amount_due": amount_in_paise,
+                "amount_due": int_amount,
                 "currency": "INR",
                 "receipt": safe_receipt,
                 "status": "created",
                 "attempts": 0,
-                "notes": notes or {},
+                "notes": safe_notes,
                 "created_at": int(time.time())
             }
 
         # Live Production Razorpay REST API Call
-        response = requests.post(
-            f"{self.base_url}/orders",
-            auth=(self.key_id, self.key_secret),
-            json=payload,
-            timeout=10.0
-        )
-        if not response.ok:
+        try:
+            response = requests.post(
+                f"{self.base_url}/orders",
+                auth=(self.key_id, self.key_secret),
+                headers=self._get_headers(),
+                json=payload,
+                timeout=10.0
+            )
+            if response.status_code in [200, 201]:
+                return response.json()
+            
             print(f"[Razorpay Production Order Error] Status: {response.status_code}, Body: {response.text}")
-        response.raise_for_status()
-        return response.json()
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as http_err:
+            # Provide clear diagnostic if 406 or other client error occurs
+            print(f"[Razorpay HTTP Error]: {http_err} - Response: {getattr(response, 'text', '')}")
+            raise Exception(f"Razorpay API error ({response.status_code}): {response.text}") from http_err
+        except Exception as e:
+            print(f"[Razorpay Order Creation Exception]: {e}")
+            raise
 
     def verify_payment_signature(
         self,
@@ -300,6 +326,7 @@ class RazorpayClient:
             res = requests.post(
                 f"{self.base_url}/accounts",
                 auth=(self.key_id, self.key_secret),
+                headers=self._get_headers(),
                 json=payload,
                 timeout=10
             )
@@ -353,7 +380,7 @@ class RazorpayClient:
             "transfers": [
                 {
                     "account": account_id,
-                    "amount": amount_paise,
+                    "amount": int(amount_paise),
                     "currency": currency,
                     "notes": notes or {}
                 }
@@ -364,6 +391,7 @@ class RazorpayClient:
             res = requests.post(
                 f"{self.base_url}/payments/{payment_id}/transfers",
                 auth=(self.key_id, self.key_secret),
+                headers=self._get_headers(),
                 json=payload,
                 timeout=10
             )
