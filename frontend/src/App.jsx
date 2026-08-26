@@ -273,7 +273,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/invoices/${encodeURIComponent(editingInvoice.invoice_id)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           customer_name: editingInvoice.customer_name,
           customer_phone: editingInvoice.customer_phone,
@@ -730,7 +730,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/invoices`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           customer_name: newBillData.customer_name,
           customer_phone: newBillData.customer_phone,

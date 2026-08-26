@@ -235,7 +235,7 @@ def update_guardrails(guardrails: MerchantGuardrails, ) -> MerchantGuardrails:
 def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) -> MasterInvoice:
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
-    m_id = merchant_id or getattr(invoice, 'merchant_id', 'default_merchant') or 'default_merchant'
+    m_id = merchant_id or getattr(invoice, 'merchant_id', None)
     f_url = getattr(invoice, 'file_url', None)
     items_json = json.dumps(invoice.items) if getattr(invoice, 'items', None) else None
     meta_json = json.dumps(invoice.metadata) if getattr(invoice, 'metadata', None) else None
@@ -265,7 +265,7 @@ def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) ->
         invoice.due_date,
         invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status,
         invoice.requires_human_attention,
-        m_id,
+        m_id or 'default_merchant',
         f_url,
         items_json,
         meta_json
@@ -304,7 +304,8 @@ def get_invoice(invoice_id: str, ) -> Optional[MasterInvoice]:
             requires_human_attention=bool(r_dict.get("requires_human_attention", False)),
             file_url=r_dict.get("file_url"),
             items=_parse_json_field(r_dict.get("items")),
-            metadata=_parse_json_field(r_dict.get("metadata"))
+            metadata=_parse_json_field(r_dict.get("metadata")),
+            merchant_id=r_dict.get("merchant_id")
         )
     return None
 
@@ -330,7 +331,8 @@ def get_invoices_by_phone(phone: str, ) -> List[MasterInvoice]:
                 requires_human_attention=bool(r_dict.get("requires_human_attention", False)),
                 file_url=r_dict.get("file_url"),
                 items=_parse_json_field(r_dict.get("items")),
-                metadata=_parse_json_field(r_dict.get("metadata"))
+                metadata=_parse_json_field(r_dict.get("metadata")),
+                merchant_id=r_dict.get("merchant_id")
             )
         )
     return res

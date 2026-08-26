@@ -57,6 +57,7 @@ class MasterInvoice:
     file_url: Optional[str] = None
     items: Optional[List[Dict[str, Any]]] = None
     metadata: Optional[Dict[str, Any]] = None
+    merchant_id: Optional[str] = None
 
     @property
     def original_amount_inr(self) -> float:

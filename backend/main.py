@@ -591,7 +591,7 @@ async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
             payment_method="OFFLINE_MANUAL"
         )
 
-    upsert_invoice(inv)
+    upsert_invoice(inv, merchant_id=inv.merchant_id)
     await broadcast_sse_event("payment_reconciled", {"invoice_id": inv.invoice_id})
     return {"success": True, "invoice": inv}
 
@@ -942,7 +942,8 @@ async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends
         due_date=req.due_date,
         status=InvoiceStatus.UNPAID,
         items=req.line_items or req.items,
-        metadata=meta_dict if meta_dict else None
+        metadata=meta_dict if meta_dict else None,
+        merchant_id=merchant.merchant_id
     )
 
     upsert_invoice(inv, merchant_id=merchant.merchant_id)
@@ -953,7 +954,7 @@ async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends
             cdn_url = upload_to_supabase_storage(f"{invoice_id}_{req.file_name}", raw_bytes, req.file_mime_type)
             if cdn_url:
                 inv.file_url = cdn_url
-                upsert_invoice(inv)
+                upsert_invoice(inv, merchant_id=merchant.merchant_id)
                 print(f"[Supabase Storage Success]: Attached CDN URL for {invoice_id} -> {cdn_url}")
         except Exception as e:
             print(f"[Supabase Upload Error]: {e}")
