@@ -71,6 +71,49 @@ def get_session_lock(session_id: str) -> SessionLock:
     clean_key = normalize_phone(session_id)
     return SessionLock(clean_key)
 
+def generate_greeting_and_docs(profile: Dict[str, Any], phone: str) -> tuple[str, list]:
+    cust_name = profile.get("customer_name")
+    if not cust_name or cust_name == "valued customer":
+        if profile.get("invoices") and profile["invoices"][0].get("customer_name"):
+            cust_name = profile["invoices"][0]["customer_name"]
+        else:
+            cust_name = "valued customer"
+
+    pending_bills = [item for item in profile.get("invoices", []) if item.get("status") != "PAID"]
+
+    if len(pending_bills) > 1:
+        bill_ids_str = ", ".join([b["invoice_id"] for b in pending_bills])
+        greeting_text = (
+            f"Hi {cust_name}! We are reaching out regarding your {len(pending_bills)} pending invoices "
+            f"({bill_ids_str}) with a total outstanding balance of ₹{profile['total_remaining_balance_inr']:,.2f}. "
+            "We have attached your official bill documents below for your review. How can we best assist you with resolving these today?"
+        )
+    elif pending_bills:
+        inv_item = pending_bills[0]
+        today_str = datetime.date.today().isoformat()
+        due_verb = "was" if inv_item["due_date"] < today_str else "is"
+        greeting_text = (
+            f"Hi {cust_name}! We are reaching out regarding Invoice {inv_item['invoice_id']} "
+            f"for ₹{inv_item['remaining_amount_inr']:,.2f}. Your due date {due_verb} {inv_item['due_date']}. "
+            "We have attached your official invoice bill below for your review. How can we best assist you with this today?"
+        )
+    else:
+        greeting_text = (
+            f"Hi {cust_name}! We are reaching out regarding your account. "
+            "How can we best assist you today?"
+        )
+
+    import urllib.parse
+    media_docs = []
+    for b in pending_bills:
+        media_docs.append({
+            "invoice_id": b["invoice_id"],
+            "filename": f"{b['invoice_id']}_bill.pdf",
+            "url": f"/api/invoices/{b['invoice_id']}/document?customer_phone={urllib.parse.quote_plus(phone)}"
+        })
+    return greeting_text, media_docs
+
+
 class SessionManager:
     def __init__(self):
         pass
@@ -90,28 +133,30 @@ class SessionManager:
 
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT * FROM chat_sessions WHERE customer_phone = %s;", (phone,))
+        cursor.execute("SELECT * FROM chat_sessions WHERE customer_phone = %s OR customer_phone = %s;", (phone, raw or phone))
         row = cursor.fetchone()
+
+        profile = get_customer_financial_profile(phone)
+        greeting_text, media_docs = generate_greeting_and_docs(profile, phone)
 
         if row:
             raw_messages = json.loads(row["messages_json"])
             messages = []
-            profile = get_customer_financial_profile(phone)
-            pending_bills = [item for item in profile.get("invoices", []) if item.get("status") != "PAID"]
-            import urllib.parse
-            media_docs = [
-                {
-                    "invoice_id": b["invoice_id"],
-                    "filename": f"{b['invoice_id']}_bill.pdf",
-                    "url": f"/api/invoices/{b['invoice_id']}/document?customer_phone={urllib.parse.quote_plus(phone)}"
-                } for b in pending_bills
-            ]
+            updated = False
 
             for i, m in enumerate(raw_messages):
                 meta = m.get("metadata") or {}
+                # If this is the initial outbound agent message
                 if i == 0 and m.get("sender") == "agent":
-                    if not meta.get("media_documents") and media_docs:
+                    # Refresh if it was using the generic fallback text or missing attachments
+                    if ("Hi valued customer" in m.get("text", "") or meta.get("outbound_initial_reminder")) and (len(raw_messages) <= 1 or "Hi valued customer" in m.get("text", "")):
+                        m["text"] = greeting_text
                         meta["media_documents"] = media_docs
+                        updated = True
+                    elif not meta.get("media_documents") and media_docs:
+                        meta["media_documents"] = media_docs
+                        updated = True
+
                 messages.append(
                     ChatMessage(
                         sender=m["sender"],
@@ -120,6 +165,15 @@ class SessionManager:
                         metadata=meta
                     )
                 )
+
+            if updated:
+                cursor.execute("""
+                UPDATE chat_sessions
+                SET messages_json = %s
+                WHERE customer_phone = %s;
+                """, (json.dumps([msg.dict() for msg in messages]), row["customer_phone"]))
+                conn.commit()
+
             conn.close()
             return ChatSession(
                 customer_phone=phone,
@@ -129,41 +183,6 @@ class SessionManager:
             )
 
         # Create new customer session with initial outbound agent reminder message
-        profile = get_customer_financial_profile(phone)
-        cust_name = profile["invoices"][0]["customer_name"] if profile["invoices"] else "valued customer"
-        pending_bills = [item for item in profile["invoices"] if item["status"] != "PAID"]
-        
-        if len(pending_bills) > 1:
-            bill_ids_str = ", ".join([b["invoice_id"] for b in pending_bills])
-            greeting_text = (
-                f"Hi {cust_name}! We are reaching out regarding your {len(pending_bills)} pending invoices "
-                f"({bill_ids_str}) with a total outstanding balance of ₹{profile['total_remaining_balance_inr']:,.2f}. "
-                "We have attached your official bill documents below for your review. How can we best assist you with resolving these today?"
-            )
-        elif pending_bills:
-            inv_item = pending_bills[0]
-            today_str = datetime.date.today().isoformat()
-            due_verb = "was" if inv_item["due_date"] < today_str else "is"
-            greeting_text = (
-                f"Hi {cust_name}! We are reaching out regarding Invoice {inv_item['invoice_id']} "
-                f"for ₹{inv_item['remaining_amount_inr']:,.2f}. Your due date {due_verb} {inv_item['due_date']}. "
-                "We have attached your official invoice bill below for your review. How can we best assist you with this today?"
-            )
-        else:
-            greeting_text = (
-                f"Hi {cust_name}! We are reaching out regarding your account. "
-                "How can we best assist you today?"
-            )
-
-        import urllib.parse
-        media_docs = []
-        for b in pending_bills:
-            media_docs.append({
-                "invoice_id": b["invoice_id"],
-                "filename": f"{b['invoice_id']}_bill.pdf",
-                "url": f"/api/invoices/{b['invoice_id']}/document?customer_phone={urllib.parse.quote_plus(phone)}"
-            })
-
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         initial_messages = [{
             "sender": "agent",

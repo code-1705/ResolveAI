@@ -246,11 +246,14 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
             from psycopg2.extras import DictCursor
             conn = get_connection()
             cursor = conn.cursor(cursor_factory=DictCursor)
-            clean_phone = customer_phone.replace(" ", "").replace("-", "")
-            cursor.execute(
-                "SELECT invoice_id FROM master_invoices WHERE REPLACE(REPLACE(customer_phone, ' ', ''), '-', '') = %s AND status != 'PAID' ORDER BY due_date ASC;",
-                (clean_phone,)
-            )
+            clean_phone = customer_phone.replace(" ", "").replace("-", "").replace("+", "")
+            cursor.execute("""
+                SELECT invoice_id FROM master_invoices 
+                WHERE (REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', '') = %s 
+                   OR (LENGTH(%s) >= 10 AND RIGHT(REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', ''), 10) = RIGHT(%s, 10)))
+                  AND status != 'PAID' 
+                ORDER BY due_date ASC;
+            """, (clean_phone, clean_phone, clean_phone))
             rows = cursor.fetchall()
             conn.close()
 

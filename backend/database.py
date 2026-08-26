@@ -309,10 +309,16 @@ def get_invoice(invoice_id: str, ) -> Optional[MasterInvoice]:
         )
     return None
 
-def get_invoices_by_phone(phone: str, ) -> List[MasterInvoice]:
+def get_invoices_by_phone(phone: str) -> List[MasterInvoice]:
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
-    cursor.execute("SELECT * FROM master_invoices WHERE customer_phone = %s;", (phone,))
+    clean_phone = phone.replace(" ", "").replace("-", "").replace("+", "")
+    cursor.execute("""
+        SELECT * FROM master_invoices 
+        WHERE REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', '') = %s 
+           OR (LENGTH(%s) >= 10 AND RIGHT(REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', ''), 10) = RIGHT(%s, 10))
+        ORDER BY due_date ASC;
+    """, (clean_phone, clean_phone, clean_phone))
     rows = cursor.fetchall()
     conn.close()
     res = []
@@ -433,9 +439,12 @@ def get_invoice_document(invoice_id: str, customer_phone: str) -> Optional[Dict[
     if not row:
         return None
     
-    clean_db_phone = row["customer_phone"].replace(" ", "").replace("-", "")
-    clean_req_phone = customer_phone.replace(" ", "").replace("-", "")
-    if clean_db_phone != clean_req_phone:
+    clean_db_phone = row["customer_phone"].replace(" ", "").replace("-", "").replace("+", "")
+    clean_req_phone = customer_phone.replace(" ", "").replace("-", "").replace("+", "")
+    match = (clean_db_phone == clean_req_phone) or (
+        len(clean_db_phone) >= 10 and len(clean_req_phone) >= 10 and clean_db_phone[-10:] == clean_req_phone[-10:]
+    )
+    if not match:
         return {"error": "FORBIDDEN"}
     
     return {
@@ -449,8 +458,13 @@ def get_customer_all_invoices(customer_phone: str) -> List[Dict[str, Any]]:
     """Returns all pending/unpaid invoices and document URLs belonging to a customer phone number."""
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
-    clean_phone = customer_phone.replace(" ", "").replace("-", "")
-    cursor.execute("SELECT * FROM master_invoices WHERE REPLACE(REPLACE(customer_phone, ' ', ''), '-', '') = %s ORDER BY due_date ASC;", (clean_phone,))
+    clean_phone = customer_phone.replace(" ", "").replace("-", "").replace("+", "")
+    cursor.execute("""
+        SELECT * FROM master_invoices 
+        WHERE REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', '') = %s 
+           OR (LENGTH(%s) >= 10 AND RIGHT(REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', ''), 10) = RIGHT(%s, 10))
+        ORDER BY due_date ASC;
+    """, (clean_phone, clean_phone, clean_phone))
     rows = cursor.fetchall()
     conn.close()
 
@@ -489,13 +503,16 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
     """Retrieves full account financial ledger, UNPAID invoice list, and past transaction history for a customer phone number."""
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
-    clean_phone = customer_phone.replace(" ", "").replace("-", "")
+    clean_phone = customer_phone.replace(" ", "").replace("-", "").replace("+", "")
 
     # ONLY select UNPAID / PARTIALLY_PAID / OVERDUE invoices (Exclude fully PAID bills)
-    cursor.execute(
-        "SELECT * FROM master_invoices WHERE REPLACE(REPLACE(customer_phone, ' ', ''), '-', '') = %s AND status != 'PAID' ORDER BY due_date ASC;",
-        (clean_phone,)
-    )
+    cursor.execute("""
+        SELECT * FROM master_invoices 
+        WHERE (REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', '') = %s 
+           OR (LENGTH(%s) >= 10 AND RIGHT(REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', ''), 10) = RIGHT(%s, 10)))
+          AND status != 'PAID' 
+        ORDER BY due_date ASC;
+    """, (clean_phone, clean_phone, clean_phone))
     inv_rows = cursor.fetchall()
 
     today_str = datetime.date.today().isoformat()
@@ -508,6 +525,8 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
     pending_count = 0
     overdue_count = 0
 
+    cust_name = None
+
     for r in inv_rows:
         inv_id = r["invoice_id"]
         invoice_ids.append(inv_id)
@@ -518,6 +537,9 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
         total_billed_paise += orig
         total_paid_paise += paid
         total_remaining_paise += rem
+
+        if not cust_name and r["customer_name"]:
+            cust_name = r["customer_name"]
 
         pending_count += 1
         if r["due_date"] < today_str:
@@ -538,6 +560,18 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
             "has_document": has_doc,
             "document_url": f"/api/invoices/{inv_id}/document?customer_phone={r['customer_phone']}" if has_doc else None
         })
+
+    # If no pending invoices, query any invoice (e.g. PAID) to find the customer_name
+    if not cust_name:
+        cursor.execute("""
+            SELECT customer_name FROM master_invoices 
+            WHERE REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', '') = %s 
+               OR (LENGTH(%s) >= 10 AND RIGHT(REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+', ''), 10) = RIGHT(%s, 10))
+            LIMIT 1;
+        """, (clean_phone, clean_phone, clean_phone))
+        name_row = cursor.fetchone()
+        if name_row:
+            cust_name = name_row["customer_name"]
 
     transactions_list = []
     if invoice_ids:
@@ -560,6 +594,7 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
 
     return {
         "customer_phone": customer_phone,
+        "customer_name": cust_name or "valued customer",
         "total_invoices_count": len(inv_rows),
         "pending_invoices_count": pending_count,
         "overdue_invoices_count": overdue_count,
