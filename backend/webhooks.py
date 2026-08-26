@@ -13,6 +13,7 @@ from backend.database import (
     validate_fsm_transition,
     get_connection,
     get_merchant_by_id,
+    get_guardrails,
     log_financial_transaction
 )
 from backend.razorpay_client import razorpay_client
@@ -422,10 +423,23 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "🎉 *Your invoice is now fully settled!*"
                 )
             else:
+                guardrails = get_guardrails(m_id)
+                ext_days = guardrails.max_extension_days if guardrails else 14
+                today = datetime.date.today()
+                deadline_date = today + datetime.timedelta(days=ext_days)
+                deadline_iso = deadline_date.isoformat()
+                deadline_formatted = deadline_date.strftime("%B %d, %Y")
+
+                # Update invoice due_date to the extended agreement date in DB
+                invoice.due_date = deadline_iso
+                upsert_invoice(invoice)
+
                 receipt_msg = (
                     f"✅ *Partial Payment Received!* Thank you, {invoice.customer_name}.\n\n"
-                    f"We have credited *₹{amount_paise/100:,.2f}* towards invoice `{invoice_id}` via Razorpay.\n"
-                    f"Remaining balance due: *₹{new_remaining_paise/100:,.2f}*."
+                    f"We have credited *₹{amount_paise/100:,.2f}* towards invoice `{invoice_id}` via Razorpay.\n\n"
+                    f"• *Remaining Balance Due:* ₹{new_remaining_paise/100:,.2f}\n"
+                    f"• *Final Due Date:* {deadline_formatted} ({ext_days} days extension)\n\n"
+                    f"ℹ️ *Next Step:* Please ensure the remaining balance of ₹{new_remaining_paise/100:,.2f} is settled by *{deadline_formatted}* to prevent account escalation or suspension of services."
                 )
             
             session_manager.add_message(invoice.customer_phone, "agent", receipt_msg)

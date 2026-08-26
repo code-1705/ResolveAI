@@ -174,62 +174,96 @@ def init_db():
     );
     """)
 
-    # Seed Default Guardrails if not exists
-    cursor.execute("SELECT COUNT(*) FROM merchant_guardrails;")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("""
-        INSERT INTO merchant_guardrails (id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
-        VALUES (1, %s, %s, %s, %s, %s);
-        """, (
-            settings.DEFAULT_MIN_PARTIAL_PAYMENT_PCT,
-            settings.DEFAULT_MAX_EXTENSION_DAYS,
-            settings.DEFAULT_MAX_SPLIT_INSTALLMENTS,
-            settings.DEFAULT_AUTO_DISCOUNT_WAIVER_PCT,
-            settings.DEFAULT_TONE
-        ))
+    # Seed/Backfill Default Guardrails for all merchants in merchants table
+    cursor.execute("""
+    INSERT INTO merchant_guardrails (merchant_id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
+    SELECT merchant_id, %s, %s, %s, %s, %s
+    FROM merchants
+    ON CONFLICT (merchant_id) DO NOTHING;
+    """, (
+        settings.DEFAULT_MIN_PARTIAL_PAYMENT_PCT,
+        settings.DEFAULT_MAX_EXTENSION_DAYS,
+        settings.DEFAULT_MAX_SPLIT_INSTALLMENTS,
+        settings.DEFAULT_AUTO_DISCOUNT_WAIVER_PCT,
+        settings.DEFAULT_TONE
+    ))
+
+    # Also ensure default_merchant fallback exists
+    cursor.execute("""
+    INSERT INTO merchant_guardrails (merchant_id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
+    VALUES ('default_merchant', %s, %s, %s, %s, %s)
+    ON CONFLICT (merchant_id) DO NOTHING;
+    """, (
+        settings.DEFAULT_MIN_PARTIAL_PAYMENT_PCT,
+        settings.DEFAULT_MAX_EXTENSION_DAYS,
+        settings.DEFAULT_MAX_SPLIT_INSTALLMENTS,
+        settings.DEFAULT_AUTO_DISCOUNT_WAIVER_PCT,
+        settings.DEFAULT_TONE
+    ))
 
     conn.commit()
     conn.close()
 
 # --- CRUD Operations ---
 
-def get_guardrails() -> MerchantGuardrails:
+def get_guardrails(merchant_id: Optional[str] = "default_merchant") -> MerchantGuardrails:
+    target_m_id = merchant_id or "default_merchant"
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
-    cursor.execute("SELECT * FROM merchant_guardrails WHERE id = 1;")
+    cursor.execute("SELECT * FROM merchant_guardrails WHERE merchant_id = %s;", (target_m_id,))
     row = cursor.fetchone()
+    if not row and target_m_id != "default_merchant":
+        # Fallback to default merchant guardrails or first row
+        cursor.execute("SELECT * FROM merchant_guardrails WHERE merchant_id = 'default_merchant' OR id = 1 LIMIT 1;")
+        row = cursor.fetchone()
     conn.close()
     if row:
         return MerchantGuardrails(
             id=row["id"],
+            merchant_id=row.get("merchant_id", target_m_id),
             min_partial_payment_pct=row["min_partial_payment_pct"],
             max_extension_days=row["max_extension_days"],
             max_split_installments=row["max_split_installments"],
             auto_discount_waiver_pct=row["auto_discount_waiver_pct"],
             tone=row["tone"]
         )
-    return MerchantGuardrails()
+    return MerchantGuardrails(merchant_id=target_m_id)
 
-def update_guardrails(guardrails: MerchantGuardrails, ) -> MerchantGuardrails:
+def update_guardrails(guardrails: MerchantGuardrails, merchant_id: Optional[str] = None) -> MerchantGuardrails:
+    target_m_id = merchant_id or getattr(guardrails, 'merchant_id', None) or "default_merchant"
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("""
-    UPDATE merchant_guardrails
-    SET min_partial_payment_pct = %s,
-        max_extension_days = %s,
-        max_split_installments = %s,
-        auto_discount_waiver_pct = %s,
-        tone = %s
-    WHERE id = 1;
+    INSERT INTO merchant_guardrails (merchant_id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (merchant_id) DO UPDATE SET
+        min_partial_payment_pct = EXCLUDED.min_partial_payment_pct,
+        max_extension_days = EXCLUDED.max_extension_days,
+        max_split_installments = EXCLUDED.max_split_installments,
+        auto_discount_waiver_pct = EXCLUDED.auto_discount_waiver_pct,
+        tone = EXCLUDED.tone
+    RETURNING *;
     """, (
+        target_m_id,
         guardrails.min_partial_payment_pct,
         guardrails.max_extension_days,
         guardrails.max_split_installments,
         guardrails.auto_discount_waiver_pct,
         guardrails.tone
     ))
+    row = cursor.fetchone()
     conn.commit()
     conn.close()
+    if row:
+        return MerchantGuardrails(
+            id=row["id"],
+            merchant_id=row.get("merchant_id", target_m_id),
+            min_partial_payment_pct=row["min_partial_payment_pct"],
+            max_extension_days=row["max_extension_days"],
+            max_split_installments=row["max_split_installments"],
+            auto_discount_waiver_pct=row["auto_discount_waiver_pct"],
+            tone=row["tone"]
+        )
     return guardrails
 
 def upsert_invoice(invoice: MasterInvoice, merchant_id: Optional[str] = None) -> MasterInvoice:
@@ -714,6 +748,20 @@ def get_or_create_merchant(merchant_id: str, email: str, business_name: str, pho
     RETURNING *;
     """, (merchant_id, email, business_name, phone))
     new_row = cursor.fetchone()
+
+    # Auto-seed default guardrails for newly created merchant
+    cursor.execute("""
+    INSERT INTO merchant_guardrails (merchant_id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (merchant_id) DO NOTHING;
+    """, (
+        merchant_id,
+        settings.DEFAULT_MIN_PARTIAL_PAYMENT_PCT,
+        settings.DEFAULT_MAX_EXTENSION_DAYS,
+        settings.DEFAULT_MAX_SPLIT_INSTALLMENTS,
+        settings.DEFAULT_AUTO_DISCOUNT_WAIVER_PCT,
+        settings.DEFAULT_TONE
+    ))
     conn.commit()
     conn.close()
     return Merchant(
@@ -778,6 +826,20 @@ def create_merchant_with_password(
     RETURNING *;
     """, (merchant_id, email.strip().lower(), business_name.strip(), password_hash, phone))
     row = cursor.fetchone()
+
+    # Auto-seed default guardrails for newly created merchant with password
+    cursor.execute("""
+    INSERT INTO merchant_guardrails (merchant_id, min_partial_payment_pct, max_extension_days, max_split_installments, auto_discount_waiver_pct, tone)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (merchant_id) DO NOTHING;
+    """, (
+        merchant_id,
+        settings.DEFAULT_MIN_PARTIAL_PAYMENT_PCT,
+        settings.DEFAULT_MAX_EXTENSION_DAYS,
+        settings.DEFAULT_MAX_SPLIT_INSTALLMENTS,
+        settings.DEFAULT_AUTO_DISCOUNT_WAIVER_PCT,
+        settings.DEFAULT_TONE
+    ))
     conn.commit()
     conn.close()
     return Merchant(

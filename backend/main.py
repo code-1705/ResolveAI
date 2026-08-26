@@ -205,6 +205,7 @@ app.add_middleware(
 
 # --- Request / Response Models ---
 class GuardrailsUpdateRequest(BaseModel):
+    merchant_id: Optional[str] = None
     min_partial_payment_pct: float
     max_extension_days: int
     max_split_installments: int = 3
@@ -984,11 +985,12 @@ async def trigger_due_reminders():
 
 # --- 3. Merchant Guardrail Control Endpoints ---
 @app.get("/api/guardrails")
-async def get_merchant_guardrails():
+async def get_merchant_guardrails(merchant_id: Optional[str] = Query(None)):
     """Returns current active merchant negotiation guardrails."""
-    g = get_guardrails()
+    g = get_guardrails(merchant_id or "default_merchant")
     return {
         "id": g.id,
+        "merchant_id": g.merchant_id,
         "min_partial_payment_pct": g.min_partial_payment_pct,
         "max_extension_days": g.max_extension_days,
         "max_split_installments": g.max_split_installments,
@@ -999,16 +1001,18 @@ async def get_merchant_guardrails():
 @app.post("/api/guardrails")
 async def save_merchant_guardrails(req: GuardrailsUpdateRequest):
     """Updates merchant guardrail policies and broadcasts SSE event."""
+    m_id = req.merchant_id or "default_merchant"
     g = MerchantGuardrails(
-        id=1,
+        merchant_id=m_id,
         min_partial_payment_pct=req.min_partial_payment_pct,
         max_extension_days=req.max_extension_days,
         max_split_installments=req.max_split_installments,
         auto_discount_waiver_pct=req.auto_discount_waiver_pct,
         tone=req.tone
     )
-    updated = update_guardrails(g)
+    updated = update_guardrails(g, merchant_id=m_id)
     res = {
+        "merchant_id": updated.merchant_id,
         "min_partial_payment_pct": updated.min_partial_payment_pct,
         "max_extension_days": updated.max_extension_days,
         "max_split_installments": updated.max_split_installments,
