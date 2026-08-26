@@ -254,7 +254,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             system_instruction = self._build_system_instruction(invoice, guardrails)
             contents = self._build_gemini_contents(session.messages)
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={settings.GEMINI_API_KEY}"
             payload = {
                 "systemInstruction": system_instruction,
                 "contents": contents,
@@ -267,7 +267,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             payment_amount_paise = None
             guardrail_passed = True
             guardrail_check_status = "PASS"
-            thought_summary = "Processed natural conversational turn with Gemini 2.5 Flash."
+            thought_summary = "Processed natural conversational turn with Gemini 3.6 Flash."
 
             try:
                 resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=8.0)
