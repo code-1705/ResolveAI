@@ -87,10 +87,10 @@ class GuardrailEngine:
             return (False, reason, counter_offer)
 
         # Check 2: Upper Ceiling Check
-        if proposed_amount_paise > invoice.remaining_amount_paise:
+        if proposed_amount_paise > remaining_paise:
             reason = (
                 f"Proposed payment ₹{proposed_amount_inr:,.2f} exceeds the outstanding remaining balance "
-                f"of ₹{invoice.remaining_amount_inr:,.2f}."
+                f"of ₹{paise_to_inr(remaining_paise):,.2f}."
             )
             return (False, reason, counter_offer)
 
