@@ -3,6 +3,7 @@ import asyncio
 import threading
 import json
 import datetime
+import dataclasses
 from typing import Dict, Any, List, Optional
 import redis.asyncio as redis_async
 from psycopg2.extras import DictCursor
@@ -171,7 +172,7 @@ class SessionManager:
                 UPDATE chat_sessions
                 SET messages_json = %s
                 WHERE customer_phone = %s;
-                """, (json.dumps([msg.dict() for msg in messages]), row["customer_phone"]))
+                """, (json.dumps([dataclasses.asdict(msg) for msg in messages]), row["customer_phone"]))
                 conn.commit()
 
             conn.close()
