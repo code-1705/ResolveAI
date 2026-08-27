@@ -6,10 +6,10 @@ import datetime
 from typing import Dict, Any, List, Optional
 import redis.asyncio as redis_async
 from psycopg2.extras import DictCursor
-from backend.config import settings
-from backend.models import ChatSession, ChatMessage
-from backend.database import get_connection, get_invoice, get_customer_financial_profile
-from backend.guardrails import paise_to_inr
+from backend.core.config import settings
+from backend.models.core import ChatSession, ChatMessage
+from backend.core.database import get_connection, get_invoice, get_customer_financial_profile
+from backend.services.guardrails import paise_to_inr
 
 # Redis Client Initialization
 redis_client = None

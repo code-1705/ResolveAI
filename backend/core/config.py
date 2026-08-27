@@ -1,9 +1,14 @@
+"""
+Core Configuration Module
+Loads and manages environment variables, secrets, and application-wide settings.
+"""
+
 import os
 from pydantic import BaseModel
 from typing import Optional
 
 # Load .env file automatically if python-dotenv is installed or read manually
-env_file_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+env_file_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
 if os.path.exists(env_file_path):
     try:
         from dotenv import load_dotenv

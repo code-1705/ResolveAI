@@ -1,6 +1,11 @@
+"""
+Cloud Storage Integration
+Manages secure invoice document uploads and CDN URL generation via Supabase.
+"""
+
 import requests
 from typing import Optional
-from backend.config import settings
+from backend.core.config import settings
 
 def upload_to_supabase_storage(file_name: str, file_bytes: bytes, mime_type: str) -> Optional[str]:
     """Uploads file bytes to Supabase Storage Bucket 'resolveai-invoices' and generates a 10-year signed CDN URL."""

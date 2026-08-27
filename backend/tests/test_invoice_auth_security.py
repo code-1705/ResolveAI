@@ -8,11 +8,11 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from backend.config import settings
-from backend.models import MasterInvoice, InvoiceStatus, Merchant
-from backend.database import init_db, upsert_invoice, get_invoice
-from backend.main import edit_invoice, get_invoice_detail, EditInvoiceRequest
-from backend.auth import get_current_merchant
+from backend.core.config import settings
+from backend.models.core import MasterInvoice, InvoiceStatus, Merchant
+from backend.core.database import init_db, upsert_invoice, get_invoice
+from backend.routers.invoices import edit_invoice, get_invoice_detail, EditInvoiceRequest
+from backend.core.auth import get_current_merchant
 
 class TestInvoiceAuthSecurity(unittest.TestCase):
     @classmethod

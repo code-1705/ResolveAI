@@ -6,11 +6,11 @@ from fastapi import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from backend.models import Merchant
-from backend.auth import require_verified_merchant_bank
-from backend.database import init_db
-from backend.main import create_invoice, CreateInvoiceRequest, save_merchant_guardrails, GuardrailsUpdateRequest
-
+from backend.models.core import Merchant
+from backend.core.auth import require_verified_merchant_bank
+from backend.core.database import init_db
+from backend.routers.invoices import create_invoice, CreateInvoiceRequest
+from backend.routers.guardrails import save_merchant_guardrails, GuardrailsUpdateRequest
 class TestBankVerificationGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

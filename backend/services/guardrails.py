@@ -1,7 +1,12 @@
+"""
+Business Guardrails Engine
+Enforces merchant-defined boundaries for acceptable partial payments and extensions.
+"""
+
 from typing import Tuple, Dict, Any, Optional
-from backend.config import settings
-from backend.database import get_guardrails, get_invoice
-from backend.models import MerchantGuardrails, MasterInvoice
+from backend.core.config import settings
+from backend.core.database import get_guardrails, get_invoice
+from backend.models.core import MerchantGuardrails, MasterInvoice
 
 def inr_to_paise(amount_in_inr: float) -> int:
     """
@@ -43,7 +48,7 @@ class GuardrailEngine:
         if invoice_id == "ALL":
             if not customer_phone:
                 return (False, "Customer phone required for account-level payments.", {})
-            from backend.database import get_customer_financial_profile
+            from backend.core.database import get_customer_financial_profile
             prof = get_customer_financial_profile(customer_phone)
             remaining_paise = prof["total_remaining_balance_paise"]
             if remaining_paise <= 0:
