@@ -10,7 +10,7 @@ from fastapi import APIRouter, Request, BackgroundTasks, HTTPException, Query, R
 
 from backend.core.config import settings
 from backend.integrations.razorpay import razorpay_client
-from backend.services.webhooks import verify_meta_webhook, process_whatsapp_webhook, reconcile_payment_event
+from backend.services.webhooks import verify_meta_webhook, verify_meta_post_signature, process_whatsapp_webhook, reconcile_payment_event
 from backend.services.agent import agentic_negotiator
 from backend.routers.events import broadcast_sse_event
 
@@ -73,7 +73,17 @@ async def background_process_whatsapp_message(session_id: str, invoice_id: str, 
 @router.post("/whatsapp")
 async def meta_whatsapp_webhook_receiver(request: Request, background_tasks: BackgroundTasks):
     """Meta WhatsApp Cloud API POST incoming message webhook receiver."""
-    payload = await request.json()
+    raw_bytes = await request.body()
+    signature_header = request.headers.get("X-Hub-Signature-256", "")
+
+    if not verify_meta_post_signature(raw_bytes, signature_header):
+        raise HTTPException(status_code=401, detail="Invalid Meta signature.")
+
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
     res = process_whatsapp_webhook(payload)
 
     if res.get("status") == "routed":

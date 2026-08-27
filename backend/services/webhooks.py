@@ -7,6 +7,8 @@ import asyncio
 import threading
 import datetime
 import re
+import hmac
+import hashlib
 from typing import Dict, Any, Tuple, Optional, List
 from backend.core.config import settings
 from backend.models.core import InvoiceStatus, PaymentLinkStatus
@@ -87,6 +89,23 @@ def verify_meta_webhook(mode: str, token: str, challenge: str) -> Tuple[bool, st
     if mode == "subscribe" and token == settings.META_VERIFY_TOKEN:
         return (True, challenge)
     return (False, "Invalid verification token or mode")
+
+def verify_meta_post_signature(payload_bytes: bytes, signature_header: str) -> bool:
+    """
+    Cryptographically verifies the X-Hub-Signature-256 header from Meta.
+    Prevents unauthorized actors from spoofing WhatsApp messages and draining LLM credits.
+    """
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+
+    incoming_sig = signature_header.split("sha256=")[1]
+    expected_sig = hmac.new(
+        settings.META_APP_SECRET.encode('utf-8'),
+        payload_bytes,
+        hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(expected_sig, incoming_sig)
 
 def process_whatsapp_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
