@@ -61,6 +61,10 @@ class Settings(BaseModel):
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://lcpyyilepfnlmbrwdzcv.supabase.co")
     SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 
+    # JWT Authentication Configuration
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "resolve_ai_jwt_secret_key_2026")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+
 settings = Settings()
 if settings.is_test_env and not os.getenv("DATABASE_URL"):
     settings.DATABASE_URL = None
