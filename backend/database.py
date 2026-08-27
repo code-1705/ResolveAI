@@ -77,9 +77,18 @@ def init_db():
     );
     """)
     cursor.execute("""
-    INSERT INTO merchants (merchant_id, email, business_name, phone, settlement_status)
-    VALUES ('default_merchant', 'merchant@resolveai.com', 'Resolve.ai Merchant', '+919876543210', 'ACTIVE')
+    INSERT INTO merchants (merchant_id, email, business_name, phone, settlement_status, bank_beneficiary_name, bank_account_number, bank_ifsc, bank_name)
+    VALUES ('default_merchant', 'merchant@resolveai.com', 'Resolve.ai Merchant', '+919876543210', 'ACTIVE', 'Resolve.ai Merchant', '123456789012', 'HDFC0001234', 'HDFC Bank')
     ON CONFLICT (merchant_id) DO NOTHING;
+    """)
+    cursor.execute("""
+    UPDATE merchants 
+    SET bank_beneficiary_name = COALESCE(bank_beneficiary_name, 'Resolve.ai Merchant'),
+        bank_account_number = COALESCE(bank_account_number, '123456789012'),
+        bank_ifsc = COALESCE(bank_ifsc, 'HDFC0001234'),
+        bank_name = COALESCE(bank_name, 'HDFC Bank'),
+        settlement_status = COALESCE(settlement_status, 'ACTIVE')
+    WHERE merchant_id = 'default_merchant';
     """)
 
     # 1. Merchant Guardrails Table (Multi-Tenant)

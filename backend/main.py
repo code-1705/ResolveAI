@@ -540,8 +540,8 @@ class EditInvoiceRequest(BaseModel):
     manual_payment_inr: Optional[float] = 0.0
 
 @app.put("/api/invoices/{invoice_id:path}")
-async def edit_invoice(invoice_id: str, req: EditInvoiceRequest, merchant: Merchant = Depends(get_current_merchant)):
-    """Allows authenticated merchants to edit invoice details or record manual off-platform payments (cash/UPI/cheque)."""
+async def edit_invoice(invoice_id: str, req: EditInvoiceRequest, merchant: Merchant = Depends(require_verified_merchant_bank)):
+    """Allows authenticated & bank-verified merchants to edit invoice details or record manual off-platform payments (cash/UPI/cheque)."""
     inv = get_invoice(invoice_id) or get_invoice(invoice_id.replace('/', '_')) or get_invoice(invoice_id.replace('_', '/'))
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -841,7 +841,7 @@ async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(.
 from urllib.parse import quote_plus
 
 @app.get("/api/invoices")
-async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
+async def list_invoices(merchant: Merchant = Depends(require_verified_merchant_bank)):
     """Returns list of master invoices scoped strictly to the authenticated merchant."""
     from psycopg2.extras import DictCursor
     conn = get_connection()
@@ -893,7 +893,7 @@ async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
     return invoices
 
 @app.get("/api/invoices/{invoice_id:path}")
-async def get_invoice_detail(invoice_id: str, merchant: Merchant = Depends(get_current_merchant)):
+async def get_invoice_detail(invoice_id: str, merchant: Merchant = Depends(require_verified_merchant_bank)):
     """Returns detailed information for a single invoice scoped to the authenticated merchant."""
     inv = get_invoice(invoice_id) or get_invoice(invoice_id.replace('/', '_')) or get_invoice(invoice_id.replace('_', '/'))
     if not inv:
@@ -915,8 +915,8 @@ async def get_invoice_detail(invoice_id: str, merchant: Merchant = Depends(get_c
     }
 
 @app.post("/api/invoices")
-async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends(get_current_merchant)):
-    """Creates a new master invoice scoped strictly for the authenticated merchant."""
+async def create_invoice(req: CreateInvoiceRequest, merchant: Merchant = Depends(require_verified_merchant_bank)):
+    """Creates a new master invoice scoped strictly for the authenticated & bank-verified merchant."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM master_invoices WHERE merchant_id = %s;", (merchant.merchant_id,))
@@ -991,9 +991,9 @@ async def trigger_due_reminders():
 
 # --- 3. Merchant Guardrail Control Endpoints ---
 @app.get("/api/guardrails")
-async def get_merchant_guardrails(merchant_id: Optional[str] = Query(None)):
+async def get_merchant_guardrails(merchant: Merchant = Depends(require_verified_merchant_bank)):
     """Returns current active merchant negotiation guardrails."""
-    g = get_guardrails(merchant_id or "default_merchant")
+    g = get_guardrails(merchant.merchant_id)
     return {
         "id": g.id,
         "merchant_id": g.merchant_id,
@@ -1005,9 +1005,9 @@ async def get_merchant_guardrails(merchant_id: Optional[str] = Query(None)):
     }
 
 @app.post("/api/guardrails")
-async def save_merchant_guardrails(req: GuardrailsUpdateRequest):
+async def save_merchant_guardrails(req: GuardrailsUpdateRequest, merchant: Merchant = Depends(require_verified_merchant_bank)):
     """Updates merchant guardrail policies and broadcasts SSE event."""
-    m_id = req.merchant_id or "default_merchant"
+    m_id = merchant.merchant_id
     g = MerchantGuardrails(
         merchant_id=m_id,
         min_partial_payment_pct=req.min_partial_payment_pct,
@@ -1255,7 +1255,7 @@ async def meta_whatsapp_webhook_receiver(request: Request, background_tasks: Bac
 
 # --- 6. Analytics & Metrics Endpoint (Merchant-Scoped) ---
 @app.get("/api/analytics")
-async def get_analytics_overview(merchant: Merchant = Depends(get_current_merchant)):
+async def get_analytics_overview(merchant: Merchant = Depends(require_verified_merchant_bank)):
     """Returns merchant-scoped key metrics: Total Overdue TPV, Recovered TPV, Recovery Rate %, Active Negotiations."""
     conn = get_connection()
     cursor = conn.cursor()
