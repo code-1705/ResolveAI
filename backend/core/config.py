@@ -35,6 +35,7 @@ class Settings(BaseModel):
     META_WHATSAPP_TOKEN: str = os.getenv("META_WHATSAPP_TOKEN", "mock_meta_token")
     META_WHATSAPP_PHONE_ID: str = os.getenv("META_WHATSAPP_PHONE_ID", "mock_phone_id")
     META_VERIFY_TOKEN: str = os.getenv("META_VERIFY_TOKEN", "resolve_ai_webhook_token_2026")
+    META_APP_SECRET: str = os.getenv("META_APP_SECRET", "mock_meta_app_secret_123")
 
     # LLM API Credentials
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
