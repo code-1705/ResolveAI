@@ -9,9 +9,9 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from backend.config import settings
-from backend.auth import get_current_merchant
-from backend.database import init_db
+from backend.core.config import settings
+from backend.core.auth import get_current_merchant
+from backend.core.database import init_db
 
 class TestAuthSecurity(unittest.TestCase):
     @classmethod

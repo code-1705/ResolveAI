@@ -1,8 +1,13 @@
+"""
+Database Module
+Handles PostgreSQL connections, schema initialization, and core CRUD operations.
+"""
+
 import json
 import datetime
 from typing import Optional, List, Tuple, Dict, Any
-from backend.config import settings
-from backend.models import (
+from backend.core.config import settings
+from backend.models.core import (
     Merchant,
     MerchantGuardrails,
     MasterInvoice,
@@ -461,7 +466,7 @@ def record_transaction(
         conn.close()
         return (False, True)  # Duplicate payment_id caught cleanly!
 
-from backend.storage import upload_to_supabase_storage
+from backend.integrations.storage import upload_to_supabase_storage
 
 def save_invoice_document(
     invoice_id: str,

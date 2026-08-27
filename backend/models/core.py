@@ -1,3 +1,8 @@
+"""
+Core Data Models
+Defines Pydantic schemas and Python dataclasses used throughout the application.
+"""
+
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from enum import Enum

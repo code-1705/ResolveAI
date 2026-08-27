@@ -1,3 +1,8 @@
+"""
+AI Agentic Negotiator Service
+Orchestrates Gemini AI to process customer messages and negotiate invoice payments.
+"""
+
 import asyncio
 import datetime
 import time
@@ -5,9 +10,9 @@ import re
 import json
 import requests
 from typing import Dict, Any, Tuple, Optional, List
-from backend.config import settings
-from backend.models import MasterInvoice, InvoiceStatus, PaymentLinkStatus, ChatMessage
-from backend.database import (
+from backend.core.config import settings
+from backend.models.core import MasterInvoice, InvoiceStatus, PaymentLinkStatus, ChatMessage
+from backend.core.database import (
     get_invoice,
     get_customer_all_invoices,
     get_customer_financial_profile,
@@ -15,9 +20,9 @@ from backend.database import (
     upsert_invoice,
     get_connection
 )
-from backend.guardrails import GuardrailEngine, inr_to_paise, paise_to_inr
-from backend.session_manager import SessionManager, session_manager, get_session_lock
-from backend.razorpay_client import razorpay_client
+from backend.services.guardrails import GuardrailEngine, inr_to_paise, paise_to_inr
+from backend.services.session import SessionManager, session_manager, get_session_lock
+from backend.integrations.razorpay import razorpay_client
 
 OPENAI_TOOLS = [
     {

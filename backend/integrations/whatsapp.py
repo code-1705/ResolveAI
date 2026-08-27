@@ -1,7 +1,12 @@
+"""
+WhatsApp Cloud API Client
+Handles sending outbound WhatsApp template and text messages to customers.
+"""
+
 import requests
 import time
 from typing import Dict, Any, List, Optional
-from backend.config import settings
+from backend.core.config import settings
 
 class WhatsAppCloudClient:
     def __init__(

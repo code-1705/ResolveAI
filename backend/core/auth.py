@@ -1,3 +1,8 @@
+"""
+Authentication Module
+Provides JWT verification and role-based access control dependencies for FastAPI.
+"""
+
 import os
 import json
 import base64
@@ -5,9 +10,9 @@ import jwt
 from typing import Optional
 from fastapi import Request, HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from backend.config import settings
-from backend.models import Merchant
-from backend.database import get_or_create_merchant, get_merchant_by_id
+from backend.core.config import settings
+from backend.models.core import Merchant
+from backend.core.database import get_or_create_merchant, get_merchant_by_id
 
 security = HTTPBearer(auto_error=False)
 

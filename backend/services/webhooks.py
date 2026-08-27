@@ -1,11 +1,16 @@
+"""
+Webhook Processing Service
+Contains the core business logic for handling incoming Razorpay and WhatsApp webhooks.
+"""
+
 import asyncio
 import threading
 import datetime
 import re
 from typing import Dict, Any, Tuple, Optional, List
-from backend.config import settings
-from backend.models import InvoiceStatus, PaymentLinkStatus
-from backend.database import (
+from backend.core.config import settings
+from backend.models.core import InvoiceStatus, PaymentLinkStatus
+from backend.core.database import (
     get_invoice,
     get_invoices_by_phone,
     upsert_invoice,
@@ -16,10 +21,10 @@ from backend.database import (
     get_guardrails,
     log_financial_transaction
 )
-from backend.razorpay_client import razorpay_client
-from backend.whatsapp_client import whatsapp_client
-from backend.session_manager import session_manager
-from backend.guardrails import paise_to_inr
+from backend.integrations.razorpay import razorpay_client
+from backend.integrations.whatsapp import whatsapp_client
+from backend.services.session import session_manager
+from backend.services.guardrails import paise_to_inr
 
 import redis.asyncio as redis_async
 

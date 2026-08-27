@@ -8,7 +8,7 @@ from typing import Dict, Any
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from backend.database import (
+from backend.core.database import (
     init_db,
     upsert_invoice,
     get_invoice,
@@ -16,12 +16,12 @@ from backend.database import (
     update_guardrails,
     get_connection
 )
-from backend.models import MasterInvoice, InvoiceStatus, MerchantGuardrails
-from backend.guardrails import GuardrailEngine, inr_to_paise, paise_to_inr
-from backend.session_manager import session_manager
-from backend.razorpay_client import razorpay_client
-from backend.whatsapp_client import whatsapp_client
-from backend.webhooks import reconcile_payment_event
+from backend.models.core import MasterInvoice, InvoiceStatus, MerchantGuardrails
+from backend.services.guardrails import GuardrailEngine, inr_to_paise, paise_to_inr
+from backend.services.session import session_manager
+from backend.integrations.razorpay import razorpay_client
+from backend.integrations.whatsapp import whatsapp_client
+from backend.services.webhooks import reconcile_payment_event
 from backend.main import check_due_date_reminders_job
 
 

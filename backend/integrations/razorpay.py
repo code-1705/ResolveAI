@@ -1,3 +1,8 @@
+"""
+Razorpay Integration Client
+Wrapper for creating payment links, checking out orders, and verifying webhooks via Razorpay.
+"""
+
 import hmac
 import hashlib
 import time
@@ -7,7 +12,7 @@ import os
 import sys
 from typing import Dict, Any, Optional, List
 from tenacity import retry, wait_exponential, stop_after_attempt
-from backend.config import settings
+from backend.core.config import settings
 
 class RazorpayClient:
     def __init__(
