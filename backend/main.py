@@ -540,11 +540,14 @@ class EditInvoiceRequest(BaseModel):
     manual_payment_inr: Optional[float] = 0.0
 
 @app.put("/api/invoices/{invoice_id:path}")
-async def edit_invoice(invoice_id: str, req: EditInvoiceRequest):
-    """Allows merchants to edit invoice details or record manual off-platform payments (cash/UPI/cheque)."""
+async def edit_invoice(invoice_id: str, req: EditInvoiceRequest, merchant: Merchant = Depends(get_current_merchant)):
+    """Allows authenticated merchants to edit invoice details or record manual off-platform payments (cash/UPI/cheque)."""
     inv = get_invoice(invoice_id) or get_invoice(invoice_id.replace('/', '_')) or get_invoice(invoice_id.replace('_', '/'))
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if inv.merchant_id and inv.merchant_id != merchant.merchant_id:
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to edit this invoice.")
 
     inv.customer_name = req.customer_name
     inv.customer_phone = req.customer_phone
@@ -890,11 +893,14 @@ async def list_invoices(merchant: Merchant = Depends(get_current_merchant)):
     return invoices
 
 @app.get("/api/invoices/{invoice_id:path}")
-async def get_invoice_detail(invoice_id: str):
-    """Returns detailed information for a single invoice."""
+async def get_invoice_detail(invoice_id: str, merchant: Merchant = Depends(get_current_merchant)):
+    """Returns detailed information for a single invoice scoped to the authenticated merchant."""
     inv = get_invoice(invoice_id) or get_invoice(invoice_id.replace('/', '_')) or get_invoice(invoice_id.replace('_', '/'))
     if not inv:
         raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found.")
+
+    if inv.merchant_id and inv.merchant_id != merchant.merchant_id:
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to view this invoice.")
     return {
         "invoice_id": inv.invoice_id,
         "customer_name": inv.customer_name,
