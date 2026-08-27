@@ -4,6 +4,7 @@ import threading
 import json
 import datetime
 from typing import Dict, Any, List, Optional
+import dataclasses
 import redis.asyncio as redis_async
 from psycopg2.extras import DictCursor
 from backend.core.config import settings
@@ -254,12 +255,7 @@ class SessionManager:
             metadata=metadata or {}
         )
 
-        raw_messages.append({
-            "sender": new_msg.sender,
-            "text": new_msg.text,
-            "timestamp": new_msg.timestamp,
-            "metadata": new_msg.metadata
-        })
+        raw_messages.append(dataclasses.asdict(new_msg))
 
         cursor.execute("""
         UPDATE chat_sessions
