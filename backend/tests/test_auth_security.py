@@ -7,7 +7,7 @@ import time
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from backend.config import settings
 from backend.auth import get_current_merchant
@@ -36,7 +36,7 @@ class TestAuthSecurity(unittest.TestCase):
         """Tokens signed with an invalid/attacker secret must be rejected."""
         fake_token = jwt.encode(
             {"sub": "victim_merchant_123", "email": "victim@example.com"},
-            "attacker_fake_secret_key",
+            "attacker_fake_secret_key_long_enough_for_sha256_32bytes",
             algorithm="HS256"
         )
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=fake_token)

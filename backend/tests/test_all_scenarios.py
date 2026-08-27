@@ -1,8 +1,12 @@
+import sys
+import os
 import unittest
 import asyncio
 import datetime
 import json
 from typing import Dict, Any
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from backend.database import (
     init_db,
