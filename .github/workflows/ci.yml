@@ -1,0 +1,93 @@
+name: Continuous Integration (CI)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ==========================================
+  # JOB 1: Backend Python Tests (Disposable DB)
+  # ==========================================
+  backend-tests:
+    name: Run Python Test Suite
+    runs-on: ubuntu-latest
+
+    # Ephemeral isolated PostgreSQL container (destroyed after run)
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_resolveai_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ENVIRONMENT: test
+      JWT_SECRET: test_jwt_secret_key_ci_2026
+      JWT_ALGORITHM: HS256
+      DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_resolveai_db
+      RAZORPAY_KEY_ID: rzp_test_mock12345678
+      RAZORPAY_KEY_SECRET: mock_secret_87654321
+      RAZORPAY_WEBHOOK_SECRET: mock_webhook_secret_999
+      META_WHATSAPP_TOKEN: mock_meta_token
+      META_WHATSAPP_PHONE_ID: mock_phone_id
+      META_VERIFY_TOKEN: resolve_ai_webhook_token_2026
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Auth & Security Tests
+        run: |
+          python -m backend.test_auth_security
+          python -m backend.test_invoice_auth_security
+
+      - name: Run End-to-End Scenarios Test
+        run: |
+          python -m backend.test_all_scenarios
+
+  # ==========================================
+  # JOB 2: Frontend Build & Compilation Check
+  # ==========================================
+  frontend-build:
+    name: Verify React Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build Frontend Application
+        working-directory: ./frontend
+        run: npm run build
