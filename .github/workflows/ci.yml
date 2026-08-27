@@ -57,14 +57,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Auth & Security Tests
+      - name: Run Backend Test Suite
         run: |
-          python -m backend.test_auth_security
-          python -m backend.test_invoice_auth_security
-
-      - name: Run End-to-End Scenarios Test
-        run: |
-          python -m backend.test_all_scenarios
+          python -m unittest discover -s backend/tests -p "test_*.py"
 
   # ==========================================
   # JOB 2: Frontend Build & Compilation Check

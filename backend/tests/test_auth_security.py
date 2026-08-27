@@ -7,7 +7,7 @@ import time
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from backend.config import settings
 from backend.auth import get_current_merchant
