@@ -63,12 +63,22 @@ def init_db():
         email TEXT UNIQUE NOT NULL,
         business_name TEXT NOT NULL,
         phone TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        bank_beneficiary_name TEXT,
+        bank_account_number TEXT,
+        bank_ifsc TEXT,
+        bank_name TEXT,
+        upi_id TEXT,
+        pan_number TEXT,
+        commission_pct REAL DEFAULT 3.0,
+        settlement_status TEXT DEFAULT 'ACTIVE',
+        password_hash TEXT,
+        razorpay_account_id TEXT
     );
     """)
     cursor.execute("""
-    INSERT INTO merchants (merchant_id, email, business_name, phone)
-    VALUES ('default_merchant', 'merchant@resolveai.com', 'Resolve.ai Merchant', '+919876543210')
+    INSERT INTO merchants (merchant_id, email, business_name, phone, settlement_status)
+    VALUES ('default_merchant', 'merchant@resolveai.com', 'Resolve.ai Merchant', '+919876543210', 'ACTIVE')
     ON CONFLICT (merchant_id) DO NOTHING;
     """)
 
@@ -96,33 +106,51 @@ def init_db():
         remaining_amount_paise INTEGER NOT NULL,
         due_date TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'UNPAID',
-        requires_human_attention BOOLEAN NOT NULL DEFAULT FALSE
+        requires_human_attention BOOLEAN NOT NULL DEFAULT FALSE,
+        merchant_id TEXT DEFAULT 'default_merchant',
+        file_url TEXT,
+        items JSONB,
+        metadata JSONB
     );
     """)
     conn.commit()
-    try:
-        cursor.execute("ALTER TABLE master_invoices ADD COLUMN requires_human_attention BOOLEAN NOT NULL DEFAULT FALSE;")
-        conn.commit()
-    except Exception:
-        conn.rollback()
 
-    try:
-        cursor.execute("ALTER TABLE master_invoices ADD COLUMN file_url TEXT;")
-        conn.commit()
-    except Exception:
-        conn.rollback()
+    # Migration safe-guards for existing databases
+    for col_def in [
+        "ALTER TABLE master_invoices ADD COLUMN IF NOT EXISTS requires_human_attention BOOLEAN NOT NULL DEFAULT FALSE;",
+        "ALTER TABLE master_invoices ADD COLUMN IF NOT EXISTS merchant_id TEXT DEFAULT 'default_merchant';",
+        "ALTER TABLE master_invoices ADD COLUMN IF NOT EXISTS file_url TEXT;",
+        "ALTER TABLE master_invoices ADD COLUMN IF NOT EXISTS items JSONB;",
+        "ALTER TABLE master_invoices ADD COLUMN IF NOT EXISTS metadata JSONB;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS bank_beneficiary_name TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS bank_account_number TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS bank_ifsc TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS bank_name TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS upi_id TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS pan_number TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS commission_pct REAL DEFAULT 3.0;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS settlement_status TEXT DEFAULT 'ACTIVE';",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS password_hash TEXT;",
+        "ALTER TABLE merchants ADD COLUMN IF NOT EXISTS razorpay_account_id TEXT;"
+    ]:
+        try:
+            cursor.execute(col_def)
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
-    try:
-        cursor.execute("ALTER TABLE master_invoices ADD COLUMN items JSONB;")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-
-    try:
-        cursor.execute("ALTER TABLE master_invoices ADD COLUMN metadata JSONB;")
-        conn.commit()
-    except Exception:
-        conn.rollback()
+    # Invoice Documents Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoice_documents (
+        invoice_id TEXT PRIMARY KEY,
+        file_name TEXT NOT NULL,
+        file_mime_type TEXT NOT NULL,
+        file_bytes BYTEA NOT NULL,
+        customer_phone TEXT NOT NULL,
+        uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    conn.commit()
 
     cursor = conn.cursor(cursor_factory=DictCursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoices_phone ON master_invoices(customer_phone);")

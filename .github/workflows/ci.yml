@@ -32,7 +32,7 @@ jobs:
 
     env:
       ENVIRONMENT: test
-      JWT_SECRET: test_jwt_secret_key_ci_2026
+      JWT_SECRET: test_jwt_secret_key_ci_resolve_ai_2026_secure_32bytes
       JWT_ALGORITHM: HS256
       DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_resolveai_db
       RAZORPAY_KEY_ID: rzp_test_mock12345678
