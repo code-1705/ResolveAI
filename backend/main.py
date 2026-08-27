@@ -420,7 +420,7 @@ async def register_merchant_account(req: MerchantAuthRequest):
             "business_name": merchant.business_name,
             "phone": merchant.phone
         }
-    }, "secret", algorithm="HS256")
+    }, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
     
     return {
         "session": {
@@ -468,7 +468,7 @@ async def login_merchant_account(req: MerchantAuthRequest):
             "business_name": merchant.business_name,
             "phone": merchant.phone
         }
-    }, "secret", algorithm="HS256")
+    }, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
     
     return {
         "session": {

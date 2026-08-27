@@ -15,54 +15,63 @@ async def get_current_merchant(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security)
 ) -> Merchant:
     """
-    Validates Supabase JWT Auth token or custom merchant token and ensures merchant is in DB.
+    Cryptographically validates JWT authentication token and ensures merchant is in DB.
+    Rejects unauthenticated or invalid tokens with HTTP 401 Unauthorized.
     """
     if not credentials or not credentials.credentials:
-        default = get_merchant_by_id("default_merchant")
-        if not default:
-            default = get_or_create_merchant(
-                merchant_id="default_merchant",
-                email="merchant@resolveai.com",
-                business_name="Resolve.ai Merchant"
-            )
-        return default
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication credentials required. Please provide a valid Bearer token."
+        )
 
     token = credentials.credentials.strip()
-    try:
-        if "." in token:
-            # Decode standard JWT
-            unverified_payload = jwt.decode(token, options={"verify_signature": False})
-            user_id = unverified_payload.get("sub") or unverified_payload.get("merchant_id")
-            email = unverified_payload.get("email", "merchant@example.com")
-            metadata = unverified_payload.get("user_metadata", {})
-            business_name = metadata.get("business_name") or metadata.get("name") or email.split("@")[0].capitalize()
-            phone = metadata.get("phone")
-        else:
-            # Fallback for simple tokens: demo_merchant_token_{id}
-            user_id = token
-            email = f"{token}@resolveai.com"
-            business_name = token.replace("_", " ").title()
-            phone = None
+    payload = None
 
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
+    if "." in token:
+        # 1. Primary: Verify signature with platform JWT_SECRET
+        try:
+            payload = jwt.decode(
+                token,
+                settings.JWT_SECRET,
+                algorithms=[settings.JWT_ALGORITHM],
+                options={"verify_signature": True}
+            )
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Authentication token has expired. Please log in again.")
+        except jwt.InvalidTokenError:
+            # 2. Secondary fallback: Attempt verification with Supabase secret if configured
+            if settings.SUPABASE_SERVICE_KEY:
+                try:
+                    payload = jwt.decode(
+                        token,
+                        settings.SUPABASE_SERVICE_KEY,
+                        algorithms=["HS256"],
+                        options={"verify_signature": True}
+                    )
+                except Exception:
+                    pass
 
-        # Provision or fetch merchant directly in PostgreSQL merchants table
-        merchant = get_or_create_merchant(
-            merchant_id=user_id,
-            email=email,
-            business_name=business_name,
-            phone=phone
-        )
-        return merchant
+            if not payload:
+                raise HTTPException(status_code=401, detail="Invalid authentication token signature.")
+    else:
+        raise HTTPException(status_code=401, detail="Invalid authentication token format.")
 
-    except Exception as e:
-        print(f"[Auth Verification Notice]: {e}. Using default merchant session.")
-        return get_or_create_merchant(
-            merchant_id="default_merchant",
-            email="merchant@resolveai.com",
-            business_name="Resolve.ai Merchant"
-        )
+    user_id = payload.get("sub") or payload.get("merchant_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload: missing merchant identifier.")
+
+    email = payload.get("email", f"{user_id}@resolveai.com")
+    metadata = payload.get("user_metadata", {})
+    business_name = metadata.get("business_name") or metadata.get("name") or email.split("@")[0].capitalize()
+    phone = metadata.get("phone")
+
+    merchant = get_or_create_merchant(
+        merchant_id=user_id,
+        email=email,
+        business_name=business_name,
+        phone=phone
+    )
+    return merchant
 
 
 async def require_verified_merchant_bank(
