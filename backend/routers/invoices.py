@@ -6,6 +6,7 @@ Endpoints for creating, extracting, listing, and streaming master invoices.
 import time
 import base64
 import requests
+import httpx
 import json
 from typing import Dict, Any, List, Optional
 
@@ -139,7 +140,8 @@ async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(.
     if file_url and file_url.strip():
         if file_url.startswith("http://") or file_url.startswith("https://"):
             try:
-                cdn_res = requests.get(file_url, timeout=5.0)
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    cdn_res = await client.get(file_url)
                 if cdn_res.status_code == 200:
                     return Response(
                         content=cdn_res.content,
@@ -156,7 +158,8 @@ async def stream_invoice_document(invoice_id: str, customer_phone: str = Query(.
             "apikey": settings.SUPABASE_SERVICE_KEY
         }
         try:
-            cdn_res = requests.get(supabase_url, headers=headers, timeout=5.0)
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                cdn_res = await client.get(supabase_url, headers=headers)
             if cdn_res.status_code == 200:
                 return Response(
                     content=cdn_res.content,
