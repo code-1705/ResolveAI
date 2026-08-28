@@ -59,3 +59,5 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 project_storyline.md
+.agents
+AGENTS.md
