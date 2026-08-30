@@ -38,7 +38,6 @@ class Settings(BaseModel):
     META_APP_SECRET: str = os.getenv("META_APP_SECRET", "mock_meta_app_secret_123")
 
     # LLM API Credentials
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
     # Merchant Default Guardrails

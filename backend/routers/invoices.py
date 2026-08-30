@@ -256,7 +256,7 @@ async def edit_invoice(invoice_id: str, req: EditInvoiceRequest, merchant: Merch
 
 @router.post("/extract")
 async def extract_invoice_from_file(file: UploadFile = File(...)):
-    """Accepts an invoice PDF or image file and extracts structured invoice fields via Gemini 2.5 Flash."""
+    """Accepts an invoice PDF or image file and extracts structured invoice fields via OpenAI GPT-4o vision."""
     try:
         contents = await file.read()
         mime_type = file.content_type or "image/jpeg"
@@ -315,34 +315,37 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
         }
         """
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
+        data_url = f"data:{mime_type};base64,{base64_data}"
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {settings.OPENAI_API_KEY}"
+        }
         payload = {
-            "contents": [
+            "model": "gpt-4o",
+            "response_format": {"type": "json_object"},
+            "messages": [
                 {
-                    "parts": [
+                    "role": "user",
+                    "content": [
                         {
-                            "inlineData": {
-                                "mimeType": mime_type,
-                                "data": base64_data
-                            }
+                            "type": "image_url",
+                            "image_url": {"url": data_url, "detail": "high"}
                         },
                         {
+                            "type": "text",
                             "text": prompt
                         }
                     ]
                 }
-            ],
-            "generationConfig": {
-                "response_mime_type": "application/json"
-            }
+            ]
         }
 
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=75.0)
             if resp.status_code == 200:
                 res_json = resp.json()
-                text_resp = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                text_resp = res_json["choices"][0]["message"]["content"]
                 parsed = json.loads(text_resp.replace('```json', '').replace('```', '').strip())
                 return {
                     "success": True,
@@ -354,7 +357,7 @@ async def extract_invoice_from_file(file: UploadFile = File(...)):
             else:
                 return {
                     "success": False,
-                    "error": f"Gemini API returned status {resp.status_code}. Please enter details manually below.",
+                    "error": f"OpenAI API returned status {resp.status_code}. Please enter details manually below.",
                     "file_bytes_b64": base64_data,
                     "file_name": file.filename,
                     "file_mime_type": mime_type
