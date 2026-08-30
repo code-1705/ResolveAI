@@ -1,6 +1,6 @@
 """
 AI Agentic Negotiator Service
-Orchestrates Gemini AI to process customer messages and negotiate invoice payments.
+Orchestrates OpenAI to process customer messages and negotiate invoice payments.
 """
 
 import asyncio
@@ -428,7 +428,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                             "url": item["document_url"]
                         })
 
-            # If Gemini returned empty text or fallback is needed:
+            # If OpenAI returned empty text or fallback is needed:
             if not resp_text:
                 if media_documents:
                     resp_text = f"Here are your official invoice documents for your review below. Please let me know if you would like to proceed with payment or discuss a settlement:"
