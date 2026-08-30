@@ -268,7 +268,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                 "Authorization": f"Bearer {settings.OPENAI_API_KEY}"
             }
             payload = {
-                "model": "gpt-5.4-nano",
+                "model": settings.OPENAI_MODEL,
                 "messages": openai_messages,
                 "tools": OPENAI_TOOLS
             }
@@ -279,7 +279,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
             payment_amount_paise = None
             guardrail_passed = True
             guardrail_check_status = "PASS"
-            thought_summary = "Processed natural conversational turn with OpenAI gpt-5.4-nano."
+            thought_summary = f"Processed natural conversational turn with OpenAI {settings.OPENAI_MODEL}."
 
             try:
                 resp = requests.post(url, headers=headers, json=payload, timeout=8.0)
@@ -381,7 +381,7 @@ CORE COLLECTIONS DIRECTIVES & RULES OF ENGAGEMENT:
                             })
 
                             second_payload = {
-                                "model": "gpt-5.4-nano",
+                                "model": settings.OPENAI_MODEL,
                                 "messages": second_messages,
                                 "tools": OPENAI_TOOLS
                             }
