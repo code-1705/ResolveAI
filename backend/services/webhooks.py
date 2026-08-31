@@ -49,30 +49,42 @@ class InvoiceLock:
         self.memory_lock = None
 
         if redis_client:
-            self.redis_lock = redis_client.lock(f"lock:invoice:{invoice_id}", timeout=30)
-        else:
             try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.get_event_loop()
-            loop_id = id(loop)
-            with INVOICE_LOCK_INIT_MUTEX:
-                key = f"{loop_id}_{invoice_id}"
-                if key not in INVOICE_ROW_LOCKS:
-                    INVOICE_ROW_LOCKS[key] = asyncio.Lock()
-                self.memory_lock = INVOICE_ROW_LOCKS[key]
+                self.redis_lock = redis_client.lock(f"lock:invoice:{invoice_id}", timeout=30)
+            except Exception:
+                self.redis_lock = None
+        
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        loop_id = id(loop)
+        with INVOICE_LOCK_INIT_MUTEX:
+            key = f"{loop_id}_{invoice_id}"
+            if key not in INVOICE_ROW_LOCKS:
+                INVOICE_ROW_LOCKS[key] = asyncio.Lock()
+            self.memory_lock = INVOICE_ROW_LOCKS[key]
 
     async def __aenter__(self):
         if self.redis_lock:
-            await self.redis_lock.acquire(blocking=True)
-        else:
+            try:
+                await self.redis_lock.acquire(blocking=True)
+                return self
+            except Exception:
+                self.redis_lock = None
+        
+        if self.memory_lock:
             await self.memory_lock.acquire()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.redis_lock:
-            await self.redis_lock.release()
-        else:
+            try:
+                await self.redis_lock.release()
+                return
+            except Exception:
+                pass
+        if self.memory_lock and self.memory_lock.locked():
             self.memory_lock.release()
 
 def get_invoice_lock(invoice_id: str) -> InvoiceLock:
@@ -297,15 +309,14 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
                 unique_rzp_id = f"{razorpay_payment_id}_{inv_id}"
                 amount_to_apply = min(remaining_payment_paise, invoice.remaining_amount_paise)
                 
-                success, is_dup = record_transaction(
-                    invoice_id=inv_id,
-                    razorpay_payment_id=unique_rzp_id,
-                    razorpay_payment_link_id=razorpay_payment_link_id,
-                    amount_paid_paise=amount_to_apply,
-                    payment_method=payment_method
-                )
-                if is_dup:
+                # Idempotency Check
+                conn_check = get_connection()
+                cur_check = conn_check.cursor()
+                cur_check.execute("SELECT id FROM transaction_ledger WHERE razorpay_payment_id = %s;", (unique_rzp_id,))
+                if cur_check.fetchone():
+                    conn_check.close()
                     continue
+                conn_check.close()
                 
                 new_paid = invoice.paid_amount_paise + amount_to_apply
                 new_rem = invoice.original_amount_paise - new_paid
@@ -316,6 +327,65 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
                 invoice.status = target_status
                 upsert_invoice(invoice)
                 
+                # Log financial split & ledger for distributed bill
+                try:
+                    conn_m = get_connection()
+                    cur_m = conn_m.cursor()
+                    cur_m.execute("SELECT merchant_id FROM master_invoices WHERE invoice_id = %s;", (inv_id,))
+                    m_row = cur_m.fetchone()
+                    conn_m.close()
+                    m_id = m_row[0] if (m_row and m_row[0]) else "default_merchant"
+                    merchant = get_merchant_by_id(m_id)
+
+                    comm_pct = getattr(merchant, 'commission_pct', 3.0) or 3.0
+                    m_payout_pct = 100.0 - comm_pct
+                    merchant_share_paise = int(amount_to_apply * (m_payout_pct / 100.0))
+                    platform_fee_paise = amount_to_apply - merchant_share_paise
+
+                    rzp_acc_id = getattr(merchant, 'razorpay_account_id', None) or f"acc_{m_id}"
+                    trf_res = razorpay_client.create_payment_transfer(
+                        payment_id=razorpay_payment_id,
+                        account_id=rzp_acc_id,
+                        amount_paise=merchant_share_paise,
+                        notes={"invoice_id": inv_id, "merchant_id": m_id, "parent_payment_id": razorpay_payment_id}
+                    )
+                    transfer_id = trf_res.get("id")
+                    is_transfer_successful = trf_res.get("success", True) if not razorpay_client.is_mock else True
+                    outflow_status = "TRANSFERRED" if is_transfer_successful and transfer_id else "FAILED"
+
+                    log_financial_transaction(
+                        merchant_id=m_id,
+                        invoice_id=inv_id,
+                        transaction_type="INFLOW_CUSTOMER_PAYMENT",
+                        gross_amount_paise=amount_to_apply,
+                        merchant_amount_paise=merchant_share_paise,
+                        platform_fee_paise=platform_fee_paise,
+                        razorpay_payment_id=unique_rzp_id,
+                        razorpay_transfer_id=transfer_id,
+                        razorpay_account_id=rzp_acc_id,
+                        bank_beneficiary_name=getattr(merchant, 'bank_beneficiary_name', None),
+                        bank_account_masked=f"••••••••{(getattr(merchant, 'bank_account_number', '') or '')[-4:]}",
+                        bank_ifsc=getattr(merchant, 'bank_ifsc', None),
+                        status="CAPTURED"
+                    )
+                    log_financial_transaction(
+                        merchant_id=m_id,
+                        invoice_id=inv_id,
+                        transaction_type="OUTFLOW_MERCHANT_SETTLEMENT",
+                        gross_amount_paise=amount_to_apply,
+                        merchant_amount_paise=merchant_share_paise,
+                        platform_fee_paise=platform_fee_paise,
+                        razorpay_payment_id=unique_rzp_id,
+                        razorpay_transfer_id=transfer_id,
+                        razorpay_account_id=rzp_acc_id,
+                        bank_beneficiary_name=getattr(merchant, 'bank_beneficiary_name', None),
+                        bank_account_masked=f"••••••••{(getattr(merchant, 'bank_account_number', '') or '')[-4:]}",
+                        bank_ifsc=getattr(merchant, 'bank_ifsc', None),
+                        status=outflow_status
+                    )
+                except Exception as split_err:
+                    print(f"[Account Payment Split Logging Error for {inv_id}]: {split_err}")
+
                 distributed_invoices.append({"invoice_id": inv_id, "amount_applied": amount_to_apply, "status": target_status.value})
                 remaining_payment_paise -= amount_to_apply
 
@@ -332,6 +402,46 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
                     razorpay_client.cancel_payment_link(razorpay_payment_link_id)
                 except Exception:
                     pass
+
+            # Auto-Inject Confirmation Receipt into WhatsApp Chat Session & SSE
+            all_cust_invoices = get_invoices_by_phone(customer_phone)
+            total_account_remaining_paise = sum([inv.remaining_amount_paise for inv in all_cust_invoices])
+            customer_name = all_cust_invoices[0].customer_name if all_cust_invoices else "Valued Customer"
+
+            if total_account_remaining_paise == 0:
+                receipt_msg = (
+                    f"✅ *Account Payment Confirmed!* Thank you, {customer_name}.\n\n"
+                    f"We have received your payment of *₹{amount_paise/100:,.2f}* across {len(distributed_invoices)} invoice(s) via Razorpay (Ref: `{razorpay_payment_id}`).\n\n"
+                    "🎉 *Your account is now fully settled!*"
+                )
+            else:
+                breakdown_lines = "\n".join([f"• Invoice `{d['invoice_id']}`: ₹{d['amount_applied']/100:,.2f} ({d['status']})" for d in distributed_invoices])
+                receipt_msg = (
+                    f"✅ *Payment Received & Allocated!* Thank you, {customer_name}.\n\n"
+                    f"We have credited *₹{amount_paise/100:,.2f}* across your outstanding invoices:\n{breakdown_lines}\n\n"
+                    f"• *Total Remaining Account Balance:* ₹{total_account_remaining_paise/100:,.2f}\n\n"
+                    f"ℹ️ *Next Step:* Please settle the remaining balance to keep your account in good standing."
+                )
+
+            session_manager.add_message(customer_phone, "agent", receipt_msg)
+
+            try:
+                whatsapp_client.send_text_message(customer_phone, receipt_msg)
+            except Exception as wa_err:
+                print(f"[WhatsApp Account Confirmation Notice]: {wa_err}")
+
+            try:
+                from backend.routers.events import broadcast_sse_event
+                await broadcast_sse_event("payment_reconciled", {
+                    "invoice_id": "ALL",
+                    "customer_phone": customer_phone,
+                    "amount_paid_inr": amount_paise / 100.0,
+                    "remaining_inr": total_account_remaining_paise / 100.0,
+                    "receipt_message": receipt_msg,
+                    "distributed": distributed_invoices
+                })
+            except Exception as sse_err:
+                print(f"[SSE Broadcast Notice]: {sse_err}")
 
             return {"status": "success", "type": "account_level", "distributed": distributed_invoices, "unallocated_paise": remaining_payment_paise}
 
@@ -476,7 +586,7 @@ async def reconcile_payment_event(payload: Dict[str, Any]) -> Dict[str, Any]:
 
             # Broadcast real-time SSE event with chat update
             try:
-                from backend.main import broadcast_sse_event
+                from backend.routers.events import broadcast_sse_event
                 await broadcast_sse_event("payment_reconciled", {
                     "invoice_id": invoice_id,
                     "customer_phone": invoice.customer_phone,
