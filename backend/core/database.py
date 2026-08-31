@@ -652,7 +652,7 @@ def get_customer_financial_profile(customer_phone: str) -> Dict[str, Any]:
     transactions_list = []
     if invoice_ids:
         cursor.execute(
-            "SELECT * FROM transaction_ledger WHERE invoice_id = ANY(%s) ORDER BY id DESC;",
+            "SELECT * FROM transaction_ledger WHERE invoice_id = ANY(%s) AND transaction_type = 'INFLOW_CUSTOMER_PAYMENT' ORDER BY id DESC;",
             (invoice_ids,)
         )
         tx_rows = cursor.fetchall()
